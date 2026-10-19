@@ -114,10 +114,12 @@ function appPolicy(html: string): string {
         "default-src 'self'",
         ["script-src 'self'", ...hashes].join(" "),
         "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data: blob:",
+        // A bare YouTube link shows as its still, and as the player on a tap (`web/media-cards.js`): images from anywhere
+        // over https, and the player itself on the nocookie domain. Nothing else may load, and nothing is sent out.
+        "img-src 'self' data: blob: https:",
         "media-src 'self' data: blob:",
         "connect-src 'self'",
-        "frame-src 'self'",
+        "frame-src 'self' https://www.youtube-nocookie.com",
         "worker-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",

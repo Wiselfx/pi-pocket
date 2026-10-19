@@ -7,6 +7,7 @@ import { Component, createContext, h } from "preact";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
+import { mediaCards } from "./media-cards.js";
 import { actions, filesShown, notify, openSheet, store } from "./store.js";
 
 export const html = htm.bind(h);
@@ -311,6 +312,9 @@ function sanitize(html, fold) {
     const holder = document.createElement("div");
 
     holder.append(fragment);
+
+    // A bare link alone in its line is the thing itself: a video as a player, an image as an image.
+    mediaCards(holder);
 
     return holder;
 }

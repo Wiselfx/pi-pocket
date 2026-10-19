@@ -1380,8 +1380,11 @@ test("the web edge: page policy, local redirects, asked account switches, no cro
                 policy.includes(`'sha256-${createHash("sha256").update(map).digest("base64")}'`),
                 `${path} allows the import map`,
             );
-            assert.match(policy, /img-src 'self' data: blob:;/);
+            // Images may come from anywhere over https, and a bare YouTube link plays on the nocookie domain
+            // (`web/media-cards.js`); connect-src and scripts stay on this server.
+            assert.match(policy, /img-src 'self' data: blob: https:;/);
             assert.match(policy, /connect-src 'self';/);
+            assert.match(policy, /frame-src 'self' https:\/\/www\.youtube-nocookie\.com/);
             assert.match(policy, /frame-ancestors 'self'/);
         }
 
