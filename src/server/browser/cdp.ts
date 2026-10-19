@@ -172,6 +172,17 @@ const LAUNCH_ARGS = [
     "--force-color-profile=srgb",
 ];
 
+/**
+ * Chromium refuses to start as root unless the sandbox is off, and a server often runs as root (a container,
+ * a service under a person's own account). Without these it exits at once with
+ * `Running as root without --no-sandbox is not supported`, and the pipe closes before the first call.
+ */
+function rootArgs(): readonly string[] {
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+
+    return uid === 0 ? ["--no-sandbox", "--disable-dev-shm-usage"] : [];
+}
+
 /** One Chromium process. It exits on its own when the pipe closes, so a crashed server leaves none behind. */
 export class Chromium {
     readonly connection: Connection;
@@ -199,7 +210,7 @@ export class Chromium {
         mkdirSync(profile, { recursive: true, mode: 0o700 });
         const child = spawn(
             executable,
-            [...LAUNCH_ARGS, `--user-data-dir=${profile}`, ...extra, "about:blank"],
+            [...LAUNCH_ARGS, ...rootArgs(), `--user-data-dir=${profile}`, ...extra, "about:blank"],
             {
                 stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
             },
