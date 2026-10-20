@@ -4,7 +4,8 @@
  * wait for its runs), and what this process keeps of it in memory. Nothing of another session is touched.
  *
  * The store's rows go in one transaction, so they go together or not at all. The app's own records go first, and are
- * put back if that transaction fails, so a delete that fails leaves the session whole rather than half gone.
+ * put back if that transaction fails. The session's live work and follows are stopped before either, and a failure
+ * does not bring them back: what can be restored is the app's records and the session's rows, not the run.
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
