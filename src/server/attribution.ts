@@ -59,6 +59,12 @@ export class Attribution {
         this.#app = app;
     }
 
+    /** A conversation that is gone: nothing of it is remembered here. */
+    forget(id: ConversationId): void {
+        this.#lastAuthor.delete(id);
+        this.#lastAuthorEntry.delete(id);
+    }
+
     /**
      * Read back at startup who Pi works for in a conversation, from its authors document and, for the messages that
      * misses, from Pi Durable's records. Returns the ones it missed, for `repair`.

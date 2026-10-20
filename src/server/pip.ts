@@ -522,6 +522,15 @@ export class Pip {
         this.#checked.set(`${String(pipId)}:${String(sessionId)}`, Date.now());
     }
 
+    /** A session that is gone: PiP looks at it no more. */
+    forget(sessionId: ConversationId): void {
+        for (const key of [...this.#checked.keys()]) {
+            if (key.endsWith(`:${String(sessionId)}`)) {
+                this.#checked.delete(key);
+            }
+        }
+    }
+
     /**
      * Refuse to act on a session PiP has not looked at lately: what it would send or stop may be what the session does
      * not need. `doing` says what in a few words ("message", "stop").
@@ -1259,6 +1268,19 @@ export class Pip {
         }
 
         await this.#app.commands.updateSession(id, this.#through(user), { archived });
+    }
+
+    /**
+     * Delete a session for good: its messages, its work, its files, and every record of it. It cannot be brought back,
+     * so it is only for a session PiP's person asked to have gone.
+     */
+    async delete(pipId: ConversationId, sessionId: number): Promise<void> {
+        const user = this.#person(pipId);
+        const id = this.#session(pipId, user, sessionId);
+
+        this.#requireLooked(pipId, sessionId, "delete");
+
+        await this.#app.deleteSession(id, user);
     }
 
     /** The calls waiting for approval in the sessions PiP's person can see. */

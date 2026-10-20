@@ -488,6 +488,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // A session, gone for good: its messages, its work, its files, and every record of it.
+        if (first === "sessions" && second !== undefined && method === "DELETE") {
+            await app.deleteSession(conversationId(second), user);
+
+            return json(response, 200, { ok: true });
+        }
+
         if (first === "c" && second !== undefined) {
             const id = conversationId(second);
 

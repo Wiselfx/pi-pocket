@@ -45,6 +45,13 @@ export class Spend {
         this.#app = app;
     }
 
+    /** A conversation that is gone: its spend is not counted here any more. */
+    forget(id: ConversationId): void {
+        this.#costs.delete(id);
+        this.#owed.delete(id);
+        this.#stopping.delete(id);
+    }
+
     /**
      * Start from what is stored: every conversation's spend, then count what a crash left uncounted. That goes to whoever
      * Pi works for there now, as whom it was for is not stored.

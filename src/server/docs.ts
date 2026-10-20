@@ -496,12 +496,15 @@ export const ShellRequestsDoc = defineDoc<{ items: Record<string, number> }>({
     initial: () => ({ items: {} }),
 });
 
+/** One follow of a session's run, and the task that waits for it. */
+export type FollowItem = { taskId: number; session: number; at: number; doneAt?: number };
+
 /**
  * PiP's follows (`pip.ts`), by the key of the tool call that made each, so a call run again finds the follow it made.
  * `doneAt` marks one that reported (or was stopped); it stays a day, then goes.
  */
 export const FollowsDoc = defineDoc<{
-    items: Record<string, { taskId: number; session: number; at: number; doneAt?: number }>;
+    items: Record<string, FollowItem>;
 }>({
     kind: "pocket.pip-follows",
     version: 1,

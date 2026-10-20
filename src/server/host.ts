@@ -270,6 +270,7 @@ export interface PocketHost {
         | "send"
         | "stop"
         | "archive"
+        | "delete"
         | "approvals"
         | "deny"
         | "status"

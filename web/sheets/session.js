@@ -1,16 +1,18 @@
 // A session's actions from its row in the session list, for touch screens, which cannot hover to show them.
-import { selectFromList, setArchived } from "../sessions.js";
+import { deleteSession, selectFromList, setArchived } from "../sessions.js";
 import { canSteer, closeSheet, isUnread, setUnread, store } from "../store.js";
 import { isPinned, togglePin } from "../theme.js";
 import { html, item, Sheet } from "../ui.js";
 
 /**
- * What a finger held on a row offers: pin it, mark it unread (or read), archive it or bring it back, or select it to
- * act on more at once.
+ * What a finger held on a row offers: pin it, mark it unread (or read), archive it or bring it back, delete it for
+ * good, or select it to act on more at once.
  */
 export function SessionSheet({ id }) {
     const session = store.state.sessions.find((each) => each.id === id);
     const steer = canSteer();
+    // A delete cannot be undone, and it takes everyone's copy of the session: the owner's call.
+    const owner = store.state.me?.role === "owner";
 
     const then = (run) => () => {
         closeSheet();
@@ -40,6 +42,25 @@ export function SessionSheet({ id }) {
             item(
                 session.archived ? "Unarchive" : "Archive",
                 then(() => setArchived([id], !session.archived)),
+            )
+        }
+        ${
+            owner &&
+            item(
+                "Delete",
+                () => {
+                    const title = session.title ?? "New session";
+
+                    if (
+                        !confirm(`Delete “${title}”? Its messages and its files are gone for good.`)
+                    ) {
+                        return;
+                    }
+
+                    closeSheet();
+                    void deleteSession(id);
+                },
+                "for good",
             )
         }
         ${item(

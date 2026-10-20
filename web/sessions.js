@@ -122,6 +122,31 @@ export async function setArchived(ids, archived, { undo = true } = {}) {
 }
 
 /**
+ * Delete a session for good: its messages, its work, its files, and every record of it. Nothing brings it back, so the
+ * sheet asks first; the server does the rest.
+ */
+export async function deleteSession(id) {
+    const session = store.state.sessions.find((each) => each.id === id);
+    const title = session?.title ?? "New session";
+    const open = store.state.conversationId;
+
+    try {
+        await actions.deleteSession(id);
+    } catch (error) {
+        notify("error", error?.message ?? String(error));
+
+        return;
+    }
+
+    // The session this tab was showing is gone: back to the list.
+    if (open === id) {
+        navigate(null);
+    }
+
+    notify("info", `Deleted “${title.length > 48 ? `${title.slice(0, 47)}…` : title}”.`);
+}
+
+/**
  * Mark sessions as on their way into the archive (true) or out of it (false). The store drops a mark once the list
  * shows the session where it was going; should that never happen (someone moved it straight back, or the request
  * hangs), the mark goes after a while anyway.

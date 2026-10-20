@@ -312,6 +312,12 @@ export class PipCompaction {
         this.#app = app;
     }
 
+    /** A conversation that is gone: nothing of it is remembered here. */
+    forget(id: ConversationId): void {
+        this.#checking.delete(id);
+        this.#failed.delete(id);
+    }
+
     /** The tokens of context above which PiP compacts itself once idle; 0: never sooner than a session. */
     get compactAt(): number {
         return this.#app.config.pipCompactAt ?? PIP_COMPACT_DEFAULT;

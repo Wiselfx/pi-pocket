@@ -106,6 +106,7 @@ import {
     type TrustChoice,
 } from "./skills.ts";
 import { Spend } from "./spend.ts";
+import { deleteSession } from "./session-delete.ts";
 import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
@@ -1920,6 +1921,71 @@ export class PocketApp {
     /** Every session's catalogue entry, PiP's included, by id. */
     sessionCatalogue(): Readonly<Record<string, SessionMeta>> {
         return this.#sessions;
+    }
+
+    /**
+     * Delete a session for good: its messages, its work, its files, and every record the app keeps of it
+     * (`session-delete.ts`). Only the owner may, and only for a session that is not PiP's own.
+     */
+    async deleteSession(id: ConversationId, user: User): Promise<void> {
+        await deleteSession(this, id, user);
+    }
+
+    /**
+     * The rooms of conversations that are going: nothing watches a session that is gone, and nothing watches it while
+     * its rows are taken.
+     */
+    closeRooms(conversations: readonly ConversationId[]): void {
+        for (const each of conversations) {
+            const pending = this.#rooms.get(each);
+
+            if (pending === undefined) {
+                continue;
+            }
+
+            pending.then(
+                (room) => room.close(),
+                () => undefined,
+            );
+            this.#rooms.delete(each);
+        }
+    }
+
+    /**
+     * What this process kept of a session that is gone: its rooms, its state, and its place in the maps the session
+     * list, the panels and the notifications read.
+     */
+    forgetSession(id: ConversationId, conversations: readonly ConversationId[]): void {
+        for (const each of conversations) {
+            this.#busy.delete(each);
+            this.#agents.delete(each);
+            this.#parents.delete(each);
+            this.#subagents.delete(each);
+            this.#endedAt.delete(each);
+            this.#failed.delete(each);
+            this.#lastChat.delete(String(each));
+            this.attribution.forget(each);
+            this.spend.forget(each);
+            this.pip.forget(each);
+            this.pipCompaction.forget(each);
+
+            // A call waiting for someone in a session that is gone waits for no one: let it go.
+            for (const approval of this.approvals.forConversation(each)) {
+                this.approvals.answer(approval.id, { allow: false, by: "deleted" });
+            }
+
+            void this.browsers.close(Number(each)).catch(() => undefined);
+        }
+
+        const pending = this.#rooms.get(id);
+
+        if (pending !== undefined) {
+            pending.then(
+                (room) => room.close(),
+                () => undefined,
+            );
+            this.#rooms.delete(id);
+        }
     }
 
     /** When a session's last run ended, since this server started. */
