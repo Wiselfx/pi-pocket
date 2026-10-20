@@ -110,9 +110,17 @@ export async function deleteSession(app: PocketApp, id: ConversationId, user: Us
         throw new HttpError(500, `The session could not be deleted: ${describe(error)}`);
     }
 
-    // The files it left: the uploads of it and of its subagents.
+    // The files it left: the uploads of it and of its subagents. The rows are gone now, so a file that will not go is
+    // reported and left, not a delete that fails: the session is already gone.
     for (const each of conversations) {
-        await rm(join(app.dataDir, "uploads", String(each)), { recursive: true, force: true });
+        try {
+            await rm(join(app.dataDir, "uploads", String(each)), { recursive: true, force: true });
+        } catch (error) {
+            app.ownerNotice(
+                "warning",
+                `A deleted session's files could not be removed: ${describe(error)}`,
+            );
+        }
     }
 
     // What this process keeps of it.
