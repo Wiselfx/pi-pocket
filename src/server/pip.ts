@@ -115,7 +115,7 @@ type FollowInput = {
     /** The message PiP sent, whose answer the report carries; absent: report when the session is next idle. */
     requestId?: string;
 };
-type FollowState = { phase: "wait" } | { phase: "report"; text: string };
+type FollowState = { phase: "wait" } | { phase: "report"; text: string; run?: string };
 type FollowRuntime = TaskRuntime<FollowInput, FollowState, null, object>;
 
 /** One session as PiP lists it. */
@@ -139,6 +139,20 @@ const finished = { status: "terminal", outcome: { status: "completed", result: n
 /** A session's words, fenced for PiP; a fence inside them cannot end the fence early. */
 export function fenced(text: string): string {
     return `${SESSION_OPEN}\n${defang(text)}\n${SESSION_CLOSE}`;
+}
+
+/**
+ * The request id a follow task waits for: absent, it waits for the session to go idle, and its report is of that
+ * session's run.
+ */
+function followRequest(input: unknown): string | undefined {
+    if (typeof input !== "object" || input === null) {
+        return undefined;
+    }
+
+    const requestId = (input as { requestId?: unknown }).requestId;
+
+    return typeof requestId === "string" ? requestId : undefined;
 }
 
 /** A tool call's key made into a request id's: short and safe whatever the call ids look like. */
@@ -207,7 +221,7 @@ export class Pip {
             phases: {
                 wait: (task, runtime, context) => this.#wait(task.input, runtime, context),
                 report: (task, runtime, context) =>
-                    this.#report(task.input, task.state.checkpoint.text, runtime, context),
+                    this.#report(task.input, task.state.checkpoint, runtime, context),
             },
             abort: (_task, runtime, context) =>
                 runtime.commit(async (tx) => {
@@ -1349,7 +1363,7 @@ export class Pip {
         const title = app.sessionMeta(id)?.title ?? "New session";
 
         if (requestId === undefined && !app.isBusy(id)) {
-            const now = await this.#lastWords(id, title, "is idle");
+            const now = (await this.#lastWords(id, title, "is idle")).text;
 
             this.#looked(pipId, id);
 
@@ -1397,10 +1411,42 @@ export class Pip {
                 delete follows[each];
             }
 
-            if (
-                Object.values(follows).filter((each) => each.doneAt === undefined).length >=
-                MAX_FOLLOWS
-            ) {
+            // One follow waits for a session's run: a follow already waiting for it is the follow this call asks for.
+            // A second one would wait for the same run and report it again. The call's key joins that follow, so a
+            // replayed call finds it as well.
+            if (requestId === undefined) {
+                for (const follow of Object.values(follows)) {
+                    if (follow.doneAt !== undefined || follow.session !== sessionId) {
+                        continue;
+                    }
+
+                    const record = await tx.task(follow.taskId as never);
+
+                    if (record === undefined || record.state.status === "terminal") {
+                        continue;
+                    }
+
+                    // A follow of PiP's own message reports that answer; this one reports the run's end.
+                    if (followRequest(record.input) !== undefined) {
+                        continue;
+                    }
+
+                    this.#count(user, "act", ACTIONS_PER_HOUR);
+                    follows[key] = { taskId: follow.taskId, session: sessionId, at: now };
+
+                    return;
+                }
+            }
+
+            // Follows waiting at once, by the task that waits: one follow a session has is one follow, however often
+            // PiP asks for it.
+            const waiting = new Set(
+                Object.values(follows)
+                    .filter((each) => each.doneAt === undefined)
+                    .map((each) => each.taskId),
+            );
+
+            if (waiting.size >= MAX_FOLLOWS) {
                 throw new Error(
                     `You follow ${String(MAX_FOLLOWS)} runs already; wait for some to report.`,
                 );
@@ -1481,8 +1527,16 @@ export class Pip {
 
     // ─── Follows ────────────────────────────────────────────────────────────
 
-    /** A session's last words, for PiP: how its run ended, and Pi's last answer, fenced. */
-    async #lastWords(id: ConversationId, title: string, state: string): Promise<string> {
+    /**
+     * A session's last words, for PiP: how its run ended, and Pi's last answer, fenced. The id of the entry that
+     * answer came in goes with it: it names the run, so however many follows wait for that run, its report is sent
+     * once.
+     */
+    async #lastWords(
+        id: ConversationId,
+        title: string,
+        state: string,
+    ): Promise<{ text: string; run?: string }> {
         const name = `${quoted(title, 80)} (/s/${String(id)})`;
         const page = await (await this.#app.conversation(id)).entries({}, 16, undefined, context);
         const last = page.items
@@ -1490,22 +1544,27 @@ export class Pip {
             .find((entry) => entry?.kind === "assistant");
 
         if (last?.kind !== "assistant") {
-            return `${name} ${state}, with no answer from Pi yet.`;
+            return { text: `${name} ${state}, with no answer from Pi yet.` };
         }
 
+        const run = String(last.id);
+
         if (last.stopReason === "aborted") {
-            return `${name} was stopped.`;
+            return { text: `${name} was stopped.`, run };
         }
 
         if (last.error !== undefined) {
-            return `${name} stopped with an error: ${snippet(last.error, 300)}`;
+            return { text: `${name} stopped with an error: ${snippet(last.error, 300)}`, run };
         }
 
         const text = last.blocks
             .flatMap((block) => (block.type === "text" ? [block.text] : []))
             .join("\n");
 
-        return `${name} ${state}. Pi's last answer:\n${fenced(clip(text, ANSWER_CHARS))}`;
+        return {
+            text: `${name} ${state}. Pi's last answer:\n${fenced(clip(text, ANSWER_CHARS))}`,
+            run,
+        };
     }
 
     /**
@@ -1513,36 +1572,46 @@ export class Pip {
      * is gone, a read fails) reports that instead, so PiP is never left waiting for nothing.
      */
     async #wait(input: FollowInput, runtime: FollowRuntime, context: Context): Promise<void> {
-        let text: string;
+        let outcome: { text: string; run?: string };
 
         try {
-            text = await this.#outcome(input, runtime, context);
+            outcome = await this.#outcome(input, runtime, context);
         } catch (error) {
             // Stopped or closing: not a failure to report. The abort, or the next process, takes it from here.
             if (runtime.signal.aborted) {
                 throw error;
             }
 
-            text = `Could not follow ${quoted(input.title, 80)} (/s/${String(input.sessionId)}): ${snippet(describe(error), 300)}`;
+            outcome = {
+                text: `Could not follow ${quoted(input.title, 80)} (/s/${String(input.sessionId)}): ${snippet(describe(error), 300)}`,
+            };
         }
 
         await runtime.commit(
             () =>
                 ({
                     status: "running",
-                    checkpoint: { phase: "report", text: `${REPORT_HEAD}${text}` },
+                    checkpoint: {
+                        phase: "report",
+                        text: `${REPORT_HEAD}${outcome.text}`,
+                        ...(outcome.run === undefined ? {} : { run: outcome.run }),
+                    },
                 }) as const,
             context,
         );
     }
 
     /** What came of the run PiP follows, once it ended. */
-    async #outcome(input: FollowInput, runtime: FollowRuntime, context: Context): Promise<string> {
+    async #outcome(
+        input: FollowInput,
+        runtime: FollowRuntime,
+        context: Context,
+    ): Promise<{ text: string; run?: string }> {
         const session = await runtime.conversation(input.sessionId, context);
         const name = `${quoted(input.title, 80)} (/s/${String(input.sessionId)})`;
 
         if (session === undefined) {
-            return `${name} is gone.`;
+            return { text: `${name} is gone.` };
         }
 
         if (input.requestId === undefined) {
@@ -1561,7 +1630,7 @@ export class Pip {
         }, context);
 
         if (!known) {
-            return `Your message to ${name} never arrived.`;
+            return { text: `Your message to ${name} never arrived.` };
         }
 
         // The submission PiP made: a request id already known finds it without sending anything.
@@ -1598,15 +1667,17 @@ export class Pip {
         }
 
         if (settled.status === "unanswered") {
-            return withdrawn
-                ? `${name} went idle without taking your message; send it again if it still matters.`
-                : settled.reason === "aborted"
-                  ? `${name} was stopped before it answered your message.`
-                  : `${name} could not answer your message: ${snippet(String(settled.detail ?? settled.reason), 300)}`;
+            return {
+                text: withdrawn
+                    ? `${name} went idle without taking your message; send it again if it still matters.`
+                    : settled.reason === "aborted"
+                      ? `${name} was stopped before it answered your message.`
+                      : `${name} could not answer your message: ${snippet(String(settled.detail ?? settled.reason), 300)}`,
+            };
         }
 
         if (settled.type !== "input") {
-            return `${name} took your message.`;
+            return { text: `${name} took your message.` };
         }
 
         const answerId = settled.answer;
@@ -1621,7 +1692,10 @@ export class Pip {
             return undefined;
         }, context);
 
-        return `${name} answered your message:\n${fenced(clip(text, ANSWER_CHARS) || "(no text)")}`;
+        return {
+            text: `${name} answered your message:\n${fenced(clip(text, ANSWER_CHARS) || "(no text)")}`,
+            run: String(answerId),
+        };
     }
 
     /** Mark this follow as reported in PiP's list, where it stays a while so a replayed call does not follow again. */
@@ -1638,10 +1712,13 @@ export class Pip {
     /**
      * Give PiP the report: as a message that it answers, or, while a spend limit holds work back, as a note it sees with
      * its next message. Either way under a request id of its own, so a restart does not send it twice.
+     *
+     * That request id names the session and the run the report is of, not the follow that carries it: a run is
+     * reported once, however many follows waited for it.
      */
     async #report(
         input: FollowInput,
-        text: string,
+        checkpoint: { text: string; run?: string },
         runtime: FollowRuntime,
         context: Context,
     ): Promise<void> {
@@ -1660,7 +1737,13 @@ export class Pip {
         }
 
         const pip = await this.#app.harness.conversation(pipId, context);
-        const requestId = requestFor(input.userId, `pip-report-${String(runtime.taskId)}`);
+        // The run the report is of: the session's own run, or the answer to PiP's message. Without one, the follow
+        // that carries it names the report, so a restart does not send it twice.
+        const of = input.requestId === undefined ? "run" : "message";
+        const requestId = requestFor(
+            input.userId,
+            `pip-report-${String(input.sessionId)}-${of}-${checkpoint.run ?? String(runtime.taskId)}`,
+        );
 
         // The report says what the session did: PiP has looked at it.
         this.#looked(pipId, input.sessionId);
@@ -1669,7 +1752,12 @@ export class Pip {
             try {
                 if (this.#app.spend.heldBack(pipId, input.userId) === undefined) {
                     await pip.submit(
-                        { type: "input", content: text, whenBusy: "followUp", requestId },
+                        {
+                            type: "input",
+                            content: checkpoint.text,
+                            whenBusy: "followUp",
+                            requestId,
+                        },
                         context,
                     );
                 } else {
@@ -1678,11 +1766,11 @@ export class Pip {
                             type: "write",
                             entry: {
                                 kind: NOTE_ENTRY,
-                                data: { text, by: "pip", name: PIP_NAME },
+                                data: { text: checkpoint.text, by: "pip", name: PIP_NAME },
                                 model: [
                                     {
                                         role: "user",
-                                        content: [{ type: "text", text }],
+                                        content: [{ type: "text", text: checkpoint.text }],
                                         timestamp: Date.now(),
                                     },
                                 ],

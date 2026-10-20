@@ -329,6 +329,38 @@ test("a follow outlives a restart: the report comes once the session's run ends"
     assert.equal(app.pip.idOf((owner(app) as User).id), id);
 });
 
+test("one follow waits for a session's run: a follow armed twice reports it once", async () => {
+    const id = await pip();
+    const session = await newSession(app);
+
+    // PiP looks at the session before it follows it.
+    await app.pip.read(id, Number(session));
+    await app.commands.submit(session, owner(app), { text: "a sleepy job", requestId: "s-1" });
+    await until(() => app.isBusy(session), "the session at work");
+
+    // PiP follows the run, and follows it again while it still works.
+    await app.pip.follow(id, Number(session), undefined, "arm-1");
+    await app.pip.follow(id, Number(session), undefined, "arm-2");
+
+    await until(
+        async () =>
+            (await said(id)).some(
+                (line) => line.startsWith("> [report]") && line.includes(`/s/${String(session)})`),
+            ),
+        "the report",
+        15_000,
+    );
+    await until(() => !app.isBusy(session), "the session at rest", 15_000);
+    // Long enough for a second report of the same run to have come, had one waited for it.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const reports = (await said(id)).filter(
+        (line) => line.startsWith("> [report]") && line.includes(`/s/${String(session)})`),
+    );
+
+    assert.equal(reports.length, 1, "one report for the run");
+});
+
 test("nobody but its person sees PiP or writes to it: PiP acts as its person", async () => {
     const id = await pip();
     const guest = app.config.addUser("Gus", "guest").user;
