@@ -92,6 +92,9 @@ export async function deleteSession(app: PocketApp, id: ConversationId, user: Us
     // The session and the subagents under it: they are its own.
     const conversations = app.conversationsOf(id);
 
+    // There is no per-session deletion lock: a message that arrives after stopWork settles could start one more task
+    // before the rows go. Deleting is the owner's own action, and the window is short, so it is left as it is.
+
     // Nothing of it may write after its rows are gone.
     await stopWork(app, conversations);
 
