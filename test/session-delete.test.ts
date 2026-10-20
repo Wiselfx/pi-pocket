@@ -3,6 +3,7 @@ import {
     type App,
     cleanUp,
     context,
+    modelTexts,
     newSession,
     openApp,
     owner,
@@ -96,6 +97,36 @@ test("another session keeps everything when one is deleted", async () => {
     assert.ok(
         (await app.harness.conversation(kept, context)) !== undefined,
         "the other session is still there",
+    );
+});
+
+test("deleting a session with a fork is refused, so the fork keeps its history", async () => {
+    const session = await newSession(app);
+
+    await say(app, session, "inherited words");
+
+    const page = await (await app.harness.conversation(session, context))!.entries(
+        {},
+        32,
+        undefined,
+        context,
+    );
+    const answer = page.items.find((entry) => entry.kind === "pi.assistant");
+
+    assert.ok(answer !== undefined, "the session has an answer to fork from");
+
+    const { id: fork } = await app.commands.fork(session, owner(app), {
+        entryId: Number(answer.id),
+    });
+
+    await assert.rejects(app.deleteSession(session, owner(app)), /forks/i);
+
+    assert.ok(app.sessionMeta(session) !== undefined, "the parent is still listed");
+    assert.ok(rows(session).entries > 0, "the parent's rows are still there");
+    assert.match(
+        (await modelTexts(app, fork)).join("\n"),
+        /inherited words/,
+        "the fork reads its inherited history",
     );
 });
 

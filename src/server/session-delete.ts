@@ -75,6 +75,19 @@ export async function deleteSession(app: PocketApp, id: ConversationId, user: Us
         throw new HttpError(404, "PiP is not a session");
     }
 
+    // A fork's conversation still points at its parent's entries in the durable store: taking the parent's rows would
+    // leave the fork unable to read the history it inherited. Its pointer in the list is no substitute, so refuse.
+    const forks = Object.values(app.sessionCatalogue()).filter(
+        (each) => each.forkedFrom?.id === Number(id),
+    );
+
+    if (forks.length > 0) {
+        throw new HttpError(
+            409,
+            "That session has forks, which inherit its history. Delete them first.",
+        );
+    }
+
     // The session and the subagents under it: they are its own.
     const conversations = app.conversationsOf(id);
 
