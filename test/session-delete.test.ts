@@ -3,6 +3,7 @@ import {
     type App,
     cleanUp,
     context,
+    fakeTab,
     modelTexts,
     newSession,
     openApp,
@@ -10,6 +11,7 @@ import {
     root,
     say,
     scriptedModel,
+    until,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -77,6 +79,50 @@ test("a deleted session is gone: its messages, its work, and its files", async (
     assert.deepEqual(rows(session), { entries: 0, tasks: 0, submissions: 0 }, "its rows are gone");
     assert.equal(existsSync(uploads), false, "its files are gone");
     assert.ok(!app.sessions().some((each) => each.id === Number(session)), "it is out of the list");
+});
+
+test("a tab hears the session list after a delete, cached copy included", async () => {
+    const session = await newSession(app);
+    const kept = await newSession(app);
+    const tab = fakeTab(undefined, owner(app));
+
+    await say(app, kept, "still here");
+    await app.attach(tab.client);
+
+    try {
+        await until(
+            () => (tab.last("sessions") as { id: number }[] | undefined) !== undefined,
+            "the first list",
+        );
+
+        await app.deleteSession(session, owner(app));
+
+        await until(
+            () =>
+                !(tab.last("sessions") as { id: number }[]).some(
+                    (each) => each.id === Number(session),
+                ),
+            "the list without the deleted session",
+        );
+        assert.ok(
+            (tab.last("sessions") as { id: number }[]).some((each) => each.id === Number(kept)),
+            "the other session stays",
+        );
+
+        // The cache holds the new list: a tab that arrives now gets it too.
+        const late = fakeTab(undefined, owner(app));
+
+        await app.attach(late.client);
+        assert.ok(
+            !(late.last("sessions") as { id: number }[]).some(
+                (each) => each.id === Number(session),
+            ),
+            "a late tab gets the list without it",
+        );
+        app.detach(late.client);
+    } finally {
+        app.detach(tab.client);
+    }
 });
 
 test("another session keeps everything when one is deleted", async () => {
