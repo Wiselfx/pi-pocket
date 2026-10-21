@@ -39,7 +39,7 @@ before(async () => {
 });
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** A session with someone Pi works for: linked sessions act as them. */

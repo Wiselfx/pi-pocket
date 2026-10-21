@@ -150,7 +150,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("open resets query and focus", real, async () => {

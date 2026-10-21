@@ -104,7 +104,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** Pi's last answer in a conversation. */

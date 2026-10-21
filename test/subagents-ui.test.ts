@@ -149,7 +149,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("the bar says what works; Stop stops one", real, async () => {

@@ -24,7 +24,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 const get = (path: string, headers: Record<string, string>) =>

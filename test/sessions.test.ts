@@ -65,7 +65,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 async function entries(id: ConversationId): Promise<EntryRecord[]> {

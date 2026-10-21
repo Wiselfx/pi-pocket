@@ -14,7 +14,7 @@ before(async () => {
 
 after(async () => {
     await app.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a document changed many times is stored as a recent base and a few deltas", async () => {

@@ -80,7 +80,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 const module = (file: string) => app.loader.list().filter((each) => each.file === file);

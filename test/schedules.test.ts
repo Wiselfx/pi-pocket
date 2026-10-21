@@ -121,7 +121,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** Restart the server with its clock `minutes` further ahead. Returns the server's time as it starts. */

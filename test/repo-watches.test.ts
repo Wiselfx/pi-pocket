@@ -155,7 +155,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** The owner's PiP, with the scripted model. */

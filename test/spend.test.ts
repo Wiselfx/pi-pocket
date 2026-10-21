@@ -57,7 +57,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 async function sayAs(user: User, id: ConversationId, text: string): Promise<void> {

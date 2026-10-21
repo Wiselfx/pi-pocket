@@ -275,7 +275,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 const rail = (title: string) => `.sidebar .rail-ext[title="${title}"]`;

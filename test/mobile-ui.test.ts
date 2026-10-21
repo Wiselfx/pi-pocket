@@ -162,7 +162,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("back closes the open file, then the Files tile, then leaves the session", real, async () => {

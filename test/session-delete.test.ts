@@ -37,7 +37,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** What the store still holds of a conversation: its rows, counted. */
@@ -85,27 +85,23 @@ test("a tab hears the session list after a delete, cached copy included", async 
     const session = await newSession(app);
     const kept = await newSession(app);
     const tab = fakeTab(undefined, owner(app));
+    const listed = (of: { last(event: string): Record<string, unknown> | undefined }) =>
+        (of.last("sessions") as unknown as { id: number }[] | undefined) ?? [];
 
     await say(app, kept, "still here");
     await app.attach(tab.client);
 
     try {
-        await until(
-            () => (tab.last("sessions") as { id: number }[] | undefined) !== undefined,
-            "the first list",
-        );
+        await until(() => listed(tab).length > 0, "the first list");
 
         await app.deleteSession(session, owner(app));
 
         await until(
-            () =>
-                !(tab.last("sessions") as { id: number }[]).some(
-                    (each) => each.id === Number(session),
-                ),
+            () => !listed(tab).some((each) => each.id === Number(session)),
             "the list without the deleted session",
         );
         assert.ok(
-            (tab.last("sessions") as { id: number }[]).some((each) => each.id === Number(kept)),
+            listed(tab).some((each) => each.id === Number(kept)),
             "the other session stays",
         );
 
@@ -114,9 +110,7 @@ test("a tab hears the session list after a delete, cached copy included", async 
 
         await app.attach(late.client);
         assert.ok(
-            !(late.last("sessions") as { id: number }[]).some(
-                (each) => each.id === Number(session),
-            ),
+            !listed(late).some((each) => each.id === Number(session)),
             "a late tab gets the list without it",
         );
         app.detach(late.client);

@@ -19,7 +19,7 @@ const scopedIds = (models: Choices) =>
 
 after(async () => {
     await app.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("scope is optional picker metadata and uses Pi patterns without applying thinking", async () => {

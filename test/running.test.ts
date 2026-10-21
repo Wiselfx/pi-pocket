@@ -41,7 +41,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("running now lists a session's run and its tool call, scheduled messages, and only what each person may see", async () => {

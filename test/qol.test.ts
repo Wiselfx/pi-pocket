@@ -56,7 +56,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** The conversation's entries as browsers get them, oldest first. */

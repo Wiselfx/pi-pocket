@@ -75,7 +75,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 const peeks = (tab: ReturnType<typeof fakeTab>, id?: ConversationId) =>

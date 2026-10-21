@@ -106,7 +106,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 // Issue #83, reported by @vitalNohj: Enter after a click on Plan pressed it again, and plan mode went back off.

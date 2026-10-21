@@ -95,7 +95,7 @@ before(open);
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("an entry whose file would leave the extensions folder is not listed, and writes nothing", async () => {

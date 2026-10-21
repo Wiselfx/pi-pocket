@@ -39,7 +39,7 @@ before(async () => {
 });
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 // With no count limit, the words are what keeps two agents from thanking each other without end (the spend limit is the brake).

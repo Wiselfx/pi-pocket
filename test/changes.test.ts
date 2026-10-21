@@ -80,7 +80,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a session's changes list git's uncommitted files, mark Pi's, and give each file's diff", async () => {

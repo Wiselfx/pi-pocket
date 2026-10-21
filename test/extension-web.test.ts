@@ -165,7 +165,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** A request as someone (by name, or nobody), with the `X-Pocket` header unless told not to. */

@@ -109,7 +109,7 @@ beforeEach(() => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** Start a session whose parent follows `next`. */

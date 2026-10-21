@@ -189,7 +189,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a session in plan mode is told so, cannot write, still reads, and approving the plan turns it off", async () => {

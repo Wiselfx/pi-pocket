@@ -12,7 +12,7 @@ before(async () => {
 
 after(async () => {
     await app.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("each person reads, changes, and hears only their own favorites", async () => {

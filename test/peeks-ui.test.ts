@@ -288,7 +288,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a tile names its subagents at work and says what each does", real, async () => {

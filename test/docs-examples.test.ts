@@ -82,7 +82,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** What Pi's last answer in a session says. */

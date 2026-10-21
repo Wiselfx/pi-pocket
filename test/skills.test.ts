@@ -63,7 +63,7 @@ const started = async () =>
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** A skill folder `name` in `folder`, described as `description`. */

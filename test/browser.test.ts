@@ -122,9 +122,9 @@ before(async () => {
     base = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
 });
 
-after(() => {
+after(async () => {
     site.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test(
@@ -301,7 +301,18 @@ test(
             };
 
             assert.equal(state.open, true);
-            const frame = await request(viewer.token, `c/${id}/browser/frame?after=0`);
+            // A frame comes as Chromium paints one; until then the panel's poll gets 204.
+            let frame = await request(viewer.token, `c/${id}/browser/frame?after=0`);
+
+            await until(async () => {
+                if (frame.status === 200) {
+                    return true;
+                }
+
+                frame = await request(viewer.token, `c/${id}/browser/frame?after=0`);
+
+                return frame.status === 200;
+            }, "the browser frame");
 
             assert.equal(frame.status, 200);
             assert.equal(frame.headers.get("content-type"), "image/jpeg");

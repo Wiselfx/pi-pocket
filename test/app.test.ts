@@ -104,7 +104,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("the artifact tool publishes versions, edits the latest, and serves the body", async () => {

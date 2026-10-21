@@ -49,7 +49,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** A session in a folder of its own, so a check's file belongs to one test. */

@@ -71,7 +71,7 @@ before(async () => {
 
 after(async () => {
     await app.close();
-    cleanUp();
+    await cleanUp();
 });
 
 const commandId = (name: string) => app.webs.commands().find((each) => each.name === name)?.id;
