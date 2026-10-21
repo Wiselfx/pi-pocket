@@ -46,7 +46,7 @@ const stop = async () => {
     server.closeAllConnections();
     server.close();
     await app.close();
-    cleanUp();
+    await cleanUp();
     process.exit(0);
 };
 

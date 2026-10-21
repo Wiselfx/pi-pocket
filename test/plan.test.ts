@@ -102,7 +102,7 @@ const tool = (name: string, annotations?: object) =>
 		description: name,
 		parameters: Type.Object({}),
 		...(annotations === undefined ? {} : { annotations }),
-		execute: async () => ({ content: [{ type: "text", text: name + " ran" }] }),
+		execute: async () => ({ output: [{ type: "text", text: name + " ran" }] }),
 	});
 
 const peek = tool("peek");
@@ -189,7 +189,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a session in plan mode is told so, cannot write, still reads, and approving the plan turns it off", async () => {

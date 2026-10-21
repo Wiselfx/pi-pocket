@@ -47,7 +47,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** Send a message as `user` and wait for the answer, so they are the one who asked for what Pi does next. */

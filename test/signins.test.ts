@@ -87,7 +87,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 const listed = () => app.providers.list(true).find((provider) => provider.id === "expiring");

@@ -40,7 +40,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("switching from the app changes the branch, tells Pi, and shows in the view", async () => {

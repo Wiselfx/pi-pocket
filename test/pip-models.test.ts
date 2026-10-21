@@ -96,7 +96,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** A fresh PiP context for the owner, on the scripted model. */

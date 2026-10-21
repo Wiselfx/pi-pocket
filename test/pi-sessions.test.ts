@@ -49,7 +49,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** Write a session as Pi does, into the folder of its project in Pi's sessions folder; its path. */

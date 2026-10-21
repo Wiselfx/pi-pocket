@@ -25,7 +25,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 function project(settings: object | string, trusted = true): string {

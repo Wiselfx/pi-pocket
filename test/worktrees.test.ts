@@ -77,7 +77,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a session in its own worktree starts with the folder as it is, on a branch of its own, and works apart", async () => {

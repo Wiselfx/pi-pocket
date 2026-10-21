@@ -149,7 +149,7 @@ after(async () => {
     server?.closeAllConnections();
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("the bar says what works; Stop stops one", real, async () => {
@@ -170,6 +170,59 @@ test("the bar says what works; Stop stops one", real, async () => {
     const slow = (await app.harness.snapshot(SubagentsDoc, id, context))!.agents.slow!;
 
     assert.equal(app.isBusy(slow.conversationId), false, "the subagent stopped");
+});
+
+test("the board shows a sub-tile for each subagent at work, with what it does", real, async () => {
+    await started(0);
+    await page.setViewport(VIEWPORTS.desktop);
+    await settled();
+    await page.click({ selector: ".rail-agents" });
+    await see(
+        `return JSON.stringify((await import("/store.js")).store.state.board === true)`,
+        "the board",
+    );
+    await see(
+        `return JSON.stringify([...document.querySelectorAll(".board-live .agent-tile")].some((tile) =>
+            tile.textContent.includes("slow") && tile.textContent.includes("sleep 30")))`,
+        "the slow subagent's sub-tile",
+        20_000,
+    );
+
+    const said = await inPage<string[]>(
+        `return JSON.stringify([...document.querySelectorAll(".board-live .agent-tile")].map((tile) => tile.textContent.replace(/\\s+/g, " ").trim()))`,
+    );
+
+    assert.ok(
+        said.some((text) => text.includes("slow") && text.includes("sleep 30")),
+        "the working subagent's sub-tile says what it does",
+    );
+
+    // A sub-tile picks the subagent where it is; the board stays open.
+    await page.evaluate(`
+        [...document.querySelectorAll(".board-live .agent-tile")]
+            .find((tile) => tile.textContent.includes("slow"))
+            .click();
+    `);
+    await see(
+        `return JSON.stringify(document.querySelector(".board-detail-name")?.textContent === "slow" && (await import("/store.js")).store.state.board === true)`,
+        "the selected subagent's detail, on the board",
+    );
+
+    const slow = await inPage<number>(
+        `return JSON.stringify(Number([...document.querySelectorAll(".board-live .agent-tile")].find((tile) => tile.textContent.includes("slow")).dataset.peek))`,
+    );
+
+    // A double click opens it: the first click picks it, the second leaves the board for its conversation.
+    await settled();
+    await page.evaluate(`
+        const tile = [...document.querySelectorAll(".board-live .agent-tile")].find((tile) => tile.textContent.includes("slow"));
+        tile.click();
+        tile.click();
+    `);
+    await see(
+        `return JSON.stringify(location.pathname === "/s/${slow}" && (await import("/store.js")).store.state.board === false)`,
+        "a double click to open the subagent",
+    );
 });
 
 test(

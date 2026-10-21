@@ -159,14 +159,14 @@ export async function modelTexts(app: App, id: ConversationId): Promise<string[]
 }
 
 /** A browser tab as the app sees it, recording every event it is sent. Attach it with `app.attach(tab.client)`. */
-export function fakeTab(id: ConversationId | undefined, user: User) {
+export function fakeTab(id: ConversationId | undefined, user: User, protocol = 2) {
     const events: { event: string; data: Record<string, unknown> }[] = [];
     const client: Client = {
         id: `tab-${crypto.randomUUID()}`,
         connection: `connection-${crypto.randomUUID()}`,
         user,
         conversationId: id,
-        protocol: 2,
+        protocol,
         sentEntries: new Set<number>(),
         orderKey: "",
         send: (event: string, data: unknown) =>
@@ -180,7 +180,32 @@ export function fakeTab(id: ConversationId | undefined, user: User) {
     return { client, events, last, field };
 }
 
-/** Remove the temporary folder: call from `after`, once the app is closed. */
-export function cleanUp(): void {
-    rmSync(root, { recursive: true, force: true });
+/**
+ * Remove the temporary folder: call from `after`, once the app is closed. Chromium's helper processes can still be
+ * letting go of the profile after the parent exits, adding a file while the folder is taken: retry until they stop.
+ */
+export async function cleanUp(): Promise<void> {
+    const until = Date.now() + 20_000;
+
+    for (;;) {
+        try {
+            rmSync(root, { recursive: true, force: true, maxRetries: 1 });
+
+            return;
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+
+            if (
+                !["ENOTEMPTY", "EBUSY", "EPERM"].includes(code ?? "") ||
+                Date.now() > until
+            ) {
+                throw error;
+            }
+
+            const { promise, resolve } = Promise.withResolvers<void>();
+
+            setTimeout(resolve, 100);
+            await promise;
+        }
+    }
 }

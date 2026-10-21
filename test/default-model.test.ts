@@ -16,7 +16,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** What a new session of the owner's starts with. */

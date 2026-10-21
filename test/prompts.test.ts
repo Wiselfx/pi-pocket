@@ -29,7 +29,7 @@ before(async () => {
 
 after(async () => {
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a session offers its folder's templates, and sending one sends it filled in", async () => {

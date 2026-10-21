@@ -220,7 +220,7 @@ before(async () => {
 after(async () => {
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** The texts of a session's user messages, oldest first. */

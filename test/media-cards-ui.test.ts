@@ -131,7 +131,7 @@ after(async () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     server?.closeAllConnections();
     server?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 test("a bare video link shows as its still, and as the player once asked for", real, async () => {

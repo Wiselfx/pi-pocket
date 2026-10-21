@@ -66,7 +66,7 @@ before(async () => {
 after(async () => {
     server?.close();
     await app?.close();
-    cleanUp();
+    await cleanUp();
 });
 
 /** The texts of a conversation's user messages, oldest first. */
