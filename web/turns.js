@@ -310,12 +310,17 @@ export const says = (block) => block.type === "text" && block.text.trim() !== ""
  * answer being written is stored, and `from` (`itemsOf(earlier).state`) carries them on from rows before these, so they
  * do not change when the rows shown start elsewhere. The returned list's `state` is where it left off. `talk`: people
  * react to and discuss Pi's answers here (`hasEnd`).
+ *
+ * An artifact Pi published is not a step in a group: it is a card of its own, under the group before it, so that it
+ * shows as the thing it is and not as a call.
  */
 export function itemsOf(rows, partial, { prefix = "", from = null, talk = false } = {}) {
     const items = [];
     let anchor = from?.anchor ?? "top";
     let groups = from?.groups ?? 0;
     let replies = from?.replies ?? 0;
+    // Artifacts published: each one is a card of its own, and not a step in a group.
+    let cards = from?.cards ?? 0;
     // A group the rows before left open goes on here, under its name.
     let open = from?.open ?? null;
     let group = null;
@@ -338,6 +343,31 @@ export function itemsOf(rows, partial, { prefix = "", from = null, talk = false 
 
         entry.blocks.forEach((block, index) => {
             const growing = streaming && index === entry.blocks.length - 1;
+
+            if (block.type === "toolCall" && block.name === "artifact") {
+                // An artifact is presented, not called: it gets a card of its own, under the group before it.
+                words = null;
+
+                const card = {
+                    type: "artifact",
+                    key: `${prefix}p${anchor}:${cards++}`,
+                    block,
+                    entry: streaming ? undefined : entry,
+                    streaming: growing,
+                    canRun: streaming || entry === asking,
+                    anchor: undefined,
+                };
+
+                // Where a jump to this answer lands, when it says nothing else.
+                if (!anchored && !speaks) {
+                    card.anchor = entry.id;
+                    anchored = true;
+                }
+
+                items.push(card);
+
+                return;
+            }
 
             if (block.type === "thinking" || block.type === "toolCall") {
                 words = null;
@@ -441,6 +471,7 @@ export function itemsOf(rows, partial, { prefix = "", from = null, talk = false 
         anchor,
         groups,
         replies,
+        cards,
         open: group?.key ?? open,
         // The steps of a group still open here, for its line where the rows shown begin in it.
         before: group?.steps ?? from?.before ?? [],
