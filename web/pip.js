@@ -511,15 +511,6 @@ function Item({ item, last, busy, conversationId }) {
         </div>`;
     }
 
-    if (item.type === "artifact") {
-        const title = item.block.args?.title ?? "an artifact";
-
-        return html`<div class="pip-event">
-            <${Icon} name="artifact" size=${13} />
-            <span>Published ${title}</span>
-        </div>`;
-    }
-
     if (item.type === "reply") {
         const text = item.blocks.map((each) => each.block.text).join("\n\n");
         const growing = item.blocks.some((each) => each.growing);

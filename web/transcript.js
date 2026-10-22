@@ -3,7 +3,6 @@
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { initials, personColor } from "./avatar.js";
-import { ArtifactCard } from "./artifact-cards.js";
 import { browserAvailable, setBrowserOpen } from "./browser.js";
 import { describeCall, describersRevision } from "./calls.js";
 import { DiffBlock } from "./diff.js";
@@ -884,6 +883,14 @@ function ToolStep({
             }
         }
 
+        if (call.name === "artifact" && (args.content || args.edits)) {
+            parts.push(
+                html`<pre class="output">
+                    ${args.content ?? JSON.stringify(args.edits, null, 2)}
+                </pre>`,
+            );
+        }
+
         if (call.name === "browser") {
             parts.push(
                 args.script
@@ -929,6 +936,13 @@ function ToolStep({
         body = html`<div class="step-body" data-part="step-detail">${parts}</div>`;
     }
 
+    const artifact = call.name === "artifact" && details?.id ? details : null;
+    const artifactType = artifact
+        ? view.artifacts.find((each) => each.id === artifact.id)?.type
+        : undefined;
+    const artifactSrc = artifact
+        ? `/a/${view.conversation.id}/${encodeURIComponent(artifact.id)}/${artifact.version}`
+        : null;
     const child =
         call.name === "subagent"
             ? (details?.conversationId ??
@@ -951,7 +965,7 @@ function ToolStep({
         memoryAvailable(conversationId)
             ? details.lesson
             : null;
-    const extras = result?.images > 0 || watch || lesson;
+    const extras = result?.images > 0 || artifact || watch || lesson;
 
     return html`<div
         class=${`step ${open ? "open" : ""} ${settled ? "settled" : ""}`}
@@ -1014,6 +1028,30 @@ function ToolStep({
                         count=${result.images}
                         label=${`${call.name} image`}
                     />`
+                }
+                ${
+                    artifactType === "svg" &&
+                    html`<button
+                        class="artifact-preview"
+                        type="button"
+                        onClick=${() => openSheet({ type: "image", src: artifactSrc, alt: artifact.title })}
+                    >
+                        <img
+                            src=${artifactSrc}
+                            alt=${artifact.title}
+                            loading="lazy"
+                            decoding="async"
+                        />
+                    </button>`
+                }
+                ${
+                    artifact &&
+                    html`<button
+                        class="artifact-link"
+                        onClick=${() => openSheet({ type: "viewer", id: artifact.id, version: artifact.version })}
+                    >
+                        Open ${artifact.title} · version ${artifact.version} →
+                    </button>`
                 }
                 ${
                     watch &&
@@ -1929,22 +1967,6 @@ function Items({ items, results, slots, approvals, busy, past = false, conversat
         if (item.type === "reply") {
             return html`<${Memo} key=${item.key} deps=${replyDeps(item)}>
                 <${Reply} item=${item} conversationId=${conversationId} />
-            <//>`;
-        }
-
-        // An artifact Pi published: a card of its own, under the group before it, and not a call in a group.
-        if (item.type === "artifact") {
-            const result = results.get(item.block.id);
-
-            return html`<${Memo}
-                key=${item.key}
-                deps=${[item.block, item.entry, item.anchor, ...callDeps(item.block, results, slots, approvals)]}
-            >
-                ${
-                    item.anchor !== undefined &&
-                    html`<span class="entry-anchor" id=${`entry-${item.anchor}`}></span>`
-                }
-                <${ArtifactCard} call=${item.block} result=${result} />
             <//>`;
         }
 

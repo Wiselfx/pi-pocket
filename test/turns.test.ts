@@ -10,7 +10,7 @@ type Block =
 type Entry = { id?: number; kind: string; blocks?: Block[]; stopReason?: string; text?: string };
 type Step = { block: Block; entry?: Entry; streaming: boolean; canRun: boolean };
 type Item = {
-    type: "row" | "activity" | "reply" | "mark" | "artifact";
+    type: "row" | "activity" | "reply" | "mark";
     key: string | number;
     entry?: Entry;
     steps?: Step[];
@@ -18,7 +18,6 @@ type Item = {
     anchors?: number[];
     anchor?: boolean;
     end?: boolean;
-    block?: Block;
 };
 type Items = Item[] & { state: unknown };
 type Turns = {
@@ -74,40 +73,6 @@ test("Pi's calls across answers fold into one group, and words end it", () => {
         "a5:0[2]",
         "r5:0",
     ]);
-});
-
-test("an artifact is a card of its own, and not a step in a group", () => {
-    const rows = [
-        user(1),
-        answer(2, [call("a", "bash")]),
-        answer(3, [call("b", "artifact", { id: "demo", title: "Demo" })]),
-        answer(4, [said("Here it is.")], "stop"),
-    ];
-    const items = turns.itemsOf(rows, null);
-
-    // The group keeps the calls that are not an artifact, and the card comes after it.
-    assert.deepEqual(shape(items), [1, "a1:0[1]", "p1:0", "r1:0"]);
-
-    const group = items.find((item) => item.type === "activity")!;
-    const card = items.find((item) => item.type === "artifact")!;
-    const asCall = (block: Block) => block as { type: "toolCall"; id: string; name: string };
-
-    assert.equal(group.steps!.length, 1);
-    assert.equal(asCall(group.steps![0]!.block).name, "bash");
-    assert.equal(asCall(card.block!).name, "artifact");
-    assert.equal(asCall(card.block!).id, "b");
-});
-
-test("an artifact alone is a card, with no group around it", () => {
-    const rows = [user(1), answer(2, [call("a", "artifact", { id: "demo" })])];
-    const items = turns.itemsOf(rows, null);
-
-    assert.deepEqual(
-        items.map((item) => item.type),
-        ["row", "artifact"],
-    );
-    // The answer said nothing, so the card is where a jump to it lands.
-    assert.equal(items[1]!.anchor, 2);
 });
 
 test("only the newest answer that asked for tools has calls that can still run", () => {
