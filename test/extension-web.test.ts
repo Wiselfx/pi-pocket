@@ -758,6 +758,8 @@ test("a policy change queued between final authorization and admission cancels o
 test("a reconfigured target cannot substitute another allowed model for the approved start", async (t) => {
     const source = await newSession(app);
 
+    // The source's model is listed, so a start keeps it; the other listed model is the one not approved.
+    await app.allowSubagentModel(owner(app), "faux/faux-1", true);
     await app.allowSubagentModel(owner(app), "faux/faux-2", true);
     let target!: ConversationId;
     const submit = app.commands.submit.bind(app.commands);
@@ -781,7 +783,36 @@ test("a reconfigured target cannot substitute another allowed model for the appr
 
     assert.equal(answer.status, 409);
     assert.deepEqual(await modelTexts(app, target), []);
+    await app.allowSubagentModel(owner(app), "faux/faux-1", false);
     await app.allowSubagentModel(owner(app), "faux/faux-2", false);
+});
+
+test("a human start with a list and no model runs on the first listed, when the source's is not listed", async () => {
+    const source = await newSession(app);
+
+    await app.allowSubagentModel(owner(app), "faux/faux-2", true);
+
+    try {
+        const answer = await call("owner", `/api/x/workspace/start/${source}`, {
+            method: "POST",
+            body: { message: "default model", key: "default-listed" },
+        });
+
+        assert.equal(answer.status, 200);
+        const target = (answer.data as { session: ConversationId }).session;
+
+        assert.equal((await app.agentState(target))?.model?.modelId, "faux-2");
+
+        // Naming the source's own model, which is not listed, is refused.
+        const refused = await call("owner", `/api/x/workspace/start/${source}`, {
+            method: "POST",
+            body: { message: "own model", key: "own-unlisted", model: "faux/faux-1" },
+        });
+
+        assert.equal(refused.status, 403);
+    } finally {
+        await app.allowSubagentModel(owner(app), "faux/faux-2", false);
+    }
 });
 
 test("human creation inherits fresh non-selection source settings after provider checks", async (t) => {

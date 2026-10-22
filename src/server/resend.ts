@@ -4,7 +4,8 @@
  * request id per fork, it goes out once either way.
  */
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { defineTask, type EntryId } from "@earendil-works/pi-durable";
+import { defineTask, type EntryId, type UserInput } from "@earendil-works/pi-durable";
+import { describe } from "./errors.ts";
 import { ownRequest } from "./requests.ts";
 
 /** What a fork sends: the text, by whom, and the message whose images go along, when the model takes images. */
@@ -74,6 +75,55 @@ export const ResendTask = defineTask<Resend, { phase: "send" }, null>({
                 },
                 context,
             );
+            await runtime.commit(() => finished, context);
+        },
+    },
+    abort: (_task, runtime, context) =>
+        runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
+/** A queued message moved to Interrupt: what it says, and the request id it goes out with. */
+export type Interrupt = { content: UserInput; requestId: string };
+
+/**
+ * Stops the run, then sends a queued message that the commit making this task took out of the queue, so a restart
+ * in between cannot lose it. Background, so the stop does not stop this task too.
+ */
+export const InterruptTask = defineTask<Interrupt, { phase: "send" }, null>({
+    name: "pocket.interrupt",
+    version: 1,
+    initial: () => ({ phase: "send" }),
+    phases: {
+        send: async (task, runtime, context) => {
+            const { content, requestId } = task.input;
+            const id = runtime.conversationId;
+            let sent = false;
+
+            // Run again after a restart that came after the send: the run it started must not be stopped.
+            await runtime.commit(async (tx) => {
+                sent = (await tx.submissionByRequest(id, requestId)) !== undefined;
+
+                return undefined;
+            }, context);
+
+            if (!sent) {
+                // The message has left the queue: a failure here must say so, not fault the task without a word.
+                try {
+                    const conversation = await runtime.conversation(id, context);
+
+                    await conversation?.abort(context);
+                    await conversation?.submit({ type: "input", content, requestId }, context);
+                } catch (error) {
+                    if (context.abortSignal?.aborted === true) {
+                        throw error;
+                    }
+
+                    runtime.report(
+                        new Error(`A message moved to Interrupt was not sent: ${describe(error)}`),
+                    );
+                }
+            }
+
             await runtime.commit(() => finished, context);
         },
     },

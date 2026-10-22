@@ -1,4 +1,5 @@
 // A session's actions from its row in the session list, for touch screens, which cannot hover to show them.
+import { sessionActions } from "../extension-ui.js";
 import { deleteSession, selectFromList, setArchived } from "../sessions.js";
 import { canSteer, closeSheet, isUnread, setUnread, store } from "../store.js";
 import { isPinned, togglePin } from "../theme.js";
@@ -6,7 +7,7 @@ import { html, item, Sheet } from "../ui.js";
 
 /**
  * What a finger held on a row offers: pin it, mark it unread (or read), archive it or bring it back, delete it for
- * good, or select it to act on more at once.
+ * good, extensions' actions (`pocket.sessionAction`), or select it to act on more at once.
  */
 export function SessionSheet({ id }) {
     const session = store.state.sessions.find((each) => each.id === id);
@@ -44,6 +45,13 @@ export function SessionSheet({ id }) {
                 then(() => setArchived([id], !session.archived)),
             )
         }
+        ${sessionActions().map((action) =>
+            item(
+                action.label,
+                then(() => action.run([id])),
+                action.module,
+            ),
+        )}
         ${
             owner &&
             item(

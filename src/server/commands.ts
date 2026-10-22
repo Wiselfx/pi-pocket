@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
     clampThinkingLevel,
@@ -23,12 +23,14 @@ import {
     type ConversationId,
     defineTask,
     type EntryId,
+    InboxDoc,
     LiveDoc,
     type ModelRef,
     type SettledSubmissionRecord,
     type SubmissionId,
     type Task,
     type TaskRuntime,
+    type UserInput,
 } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
@@ -60,7 +62,14 @@ import { snippet } from "./projection.ts";
 import { globalModelSettings, projectModelDefault } from "./project-model.ts";
 import { expandPromptTemplate, expandSkillCommand, unwrapSkill } from "./prompts.ts";
 import { clientKey, ownRequest, requestFor } from "./requests.ts";
-import { type Resend, resendContent, resendRequest, ResendTask, userContent } from "./resend.ts";
+import {
+    InterruptTask,
+    type Resend,
+    resendContent,
+    resendRequest,
+    ResendTask,
+    userContent,
+} from "./resend.ts";
 import { whyUnanswered } from "./subagent-runs.ts";
 import { wantsTitle, writeTitle } from "./titles.ts";
 import { describeMoment, describeRepeat, knownZone } from "./when.ts";
@@ -1188,6 +1197,80 @@ export class Commands {
         }
 
         return result;
+    }
+
+    /**
+     * Move a queued message to Steer or Queue, or send it now as an Interrupt. Only its sender may: who else may move
+     * someone's message is left to the maintainers. Interrupt stops the run like the composer's Interrupt, so it
+     * withdraws the rest of the queue too. The message leaves the queue in the commit that makes the task sending it.
+     */
+    async moveQueued(
+        id: ConversationId,
+        user: User,
+        submissionId: number,
+        mode: string,
+    ): Promise<void> {
+        const app = this.#app;
+
+        app.requireSee(user, id);
+
+        if (!Number.isInteger(submissionId) || submissionId <= 0) {
+            throw new HttpError(400, "Say which queued message to move.");
+        }
+
+        if (mode !== "steer" && mode !== "followUp" && mode !== "interrupt") {
+            throw new HttpError(400, "Move a message to steer, followUp, or interrupt.");
+        }
+
+        await app.requireDriver(id, user);
+
+        if (app.attribution.knownSubmitter(submissionId) !== user.id) {
+            throw new HttpError(403, "Only its sender can move a queued message.");
+        }
+
+        const moved = await app.harness.commit(async (tx) => {
+            const items = (await tx.doc(InboxDoc, id)).items;
+            const index = items.findIndex((entry) => Number(entry.id) === submissionId);
+            const item = items[index];
+
+            if (item === undefined || item.mode === "write") {
+                return false;
+            }
+
+            if (mode !== "interrupt") {
+                item.mode = mode;
+
+                return true;
+            }
+
+            const content = copyJson(item.content) as UserInput;
+
+            items.splice(index, 1);
+            tx.settleSubmission(item.id, { status: "unanswered", reason: "aborted" });
+            // The stop withdraws subagents' reports being sent, as the composer's Interrupt does: in this commit, so a
+            // restart cannot leave the task without it (`#discardReports`).
+            const subagents = await tx.doc(SubagentsDoc, id);
+
+            if (subagents.sending !== undefined && subagents.sending.discarded !== true) {
+                subagents.sending = { ...subagents.sending, discarded: true };
+            }
+
+            await tx.createTask(
+                InterruptTask,
+                { content, requestId: ownRequest(user.id, `interrupt-${submissionId}`) },
+                { ownership: { kind: "conversation" }, background: true, conversationId: id },
+            );
+
+            return true;
+        }, context);
+
+        if (!moved) {
+            throw new HttpError(409, "That message has already gone to Pi.");
+        }
+
+        if (mode === "interrupt") {
+            await app.collab.activity(id, user, "interrupted the run");
+        }
     }
 
     async configure(

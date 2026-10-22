@@ -1,11 +1,13 @@
 /**
  * `/a/:conversation/:artifact/:version`: an artifact as its own page, in a sandbox with no way into the app. `/a/frame`:
- * the page that runs HTML from a reply, once someone taps Run, in the same sandbox.
+ * the page that runs HTML from a reply, once someone taps Run, in the same sandbox. A published artifact (`/pub/:token`,
+ * `public.ts`) serves the same page, to anyone with its address.
  */
 import type { ServerResponse } from "node:http";
 import { marked } from "marked";
 import type { PocketApp } from "../app.ts";
 import type { User } from "../config.ts";
+import type { ArtifactType } from "../docs.ts";
 import { HttpError } from "../errors.ts";
 import { conversationId, escapeHtml, send } from "./io.ts";
 
@@ -95,6 +97,35 @@ export const RUN_FRAME = `<!doctype html><html><head><meta charset="utf-8"><meta
 })();
 </script></body></html>`;
 
+/**
+ * An artifact's body as its page: SVG as an image, Markdown rendered in the artifact's own look, HTML as it was written.
+ * `/a/…` and a published one (`/pub/:token`) serve the same pages, in the same sandbox.
+ */
+export async function artifactResponse(
+    response: ServerResponse,
+    found: { meta: { type: ArtifactType; title: string }; content: string },
+    query = new URLSearchParams(),
+): Promise<void> {
+    const headers = {
+        "content-security-policy": ARTIFACT_CSP,
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+    };
+
+    if (found.meta.type === "svg") {
+        return send(response, 200, found.content, "image/svg+xml", headers);
+    }
+
+    if (found.meta.type === "markdown") {
+        const rendered = await marked.parse(found.content);
+        const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(found.meta.title)}</title><style>${MARKDOWN_STYLE}${markdownTheme(query)}</style></head><body>${rendered}</body></html>`;
+
+        return send(response, 200, html, "text/html; charset=utf-8", headers);
+    }
+
+    return send(response, 200, found.content, "text/html; charset=utf-8", headers);
+}
+
 export async function artifact(
     app: PocketApp,
     response: ServerResponse,
@@ -127,22 +158,6 @@ export async function artifact(
         id,
         version === undefined || version === "latest" ? undefined : Number(version),
     );
-    const headers = {
-        "content-security-policy": ARTIFACT_CSP,
-        "x-content-type-options": "nosniff",
-        "referrer-policy": "no-referrer",
-    };
 
-    if (found.meta.type === "svg") {
-        return send(response, 200, found.content, "image/svg+xml", headers);
-    }
-
-    if (found.meta.type === "markdown") {
-        const rendered = await marked.parse(found.content);
-        const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(found.meta.title)}</title><style>${MARKDOWN_STYLE}${markdownTheme(query)}</style></head><body>${rendered}</body></html>`;
-
-        return send(response, 200, html, "text/html; charset=utf-8", headers);
-    }
-
-    return send(response, 200, found.content, "text/html; charset=utf-8", headers);
+    await artifactResponse(response, found, query);
 }

@@ -585,10 +585,14 @@ export class LinkedSessions implements LinkedSessionsApi {
     /** Resolve exactly the requested policy, without network work. Human choices are never silently lowered. */
     #selection(agent: AgentState, request: { model?: string; thinking?: string }, strict: boolean) {
         const app = this.#app;
-        const spec =
-            request.model === undefined
-                ? agent.model && `${agent.model.provider}/${agent.model.modelId}`
-                : request.model.trim();
+        const listed = app.config.subagentModels;
+        const source = agent.model && `${agent.model.provider}/${agent.model.modelId}`;
+        // Left out: the source's model, or, when the owner keeps a list and it is not on it, the first one listed.
+        const fallback =
+            listed.length === 0 || (source !== undefined && listed.includes(source))
+                ? source
+                : listed[0];
+        const spec = request.model === undefined ? fallback : request.model.trim();
         const own = agent.thinkingLevel ?? "off";
         const asked = request.thinking ?? own;
 
@@ -606,11 +610,13 @@ export class LinkedSessions implements LinkedSessionsApi {
         const model = resolveModel(app.models, spec, app.signInNeeded);
         const chosen = `${model.provider}/${model.modelId}`;
 
-        if (
-            chosen !== (agent.model && `${agent.model.provider}/${agent.model.modelId}`) &&
-            !app.config.subagentModels.includes(chosen)
-        ) {
-            throw new HttpError(403, `The model ${chosen} is not allowed here.`);
+        // The owner's list is the only choice while it has models; the source's own model counts only when it is on it.
+        // With no list, the source's model alone.
+        if (listed.length === 0 ? chosen !== source : !listed.includes(chosen)) {
+            throw new HttpError(
+                403,
+                `The model ${chosen} is not allowed here: ${listed.length === 0 ? "the owner allows no other model than the source's" : `the owner allows only ${listed.join(", ")}`}. Do not pick another model on your own.`,
+            );
         }
 
         const selected = app.models.getModel(model.provider, model.modelId)!;
@@ -776,6 +782,28 @@ export class LinkedSessions implements LinkedSessionsApi {
         }
 
         const id = target as unknown as ConversationId;
+        const listed = app.config.subagentModels;
+        const runs = (await app.agentState(id))?.model;
+
+        // With a list, a linked session gets work only while it runs on a model on it: a person may have changed its
+        // model, or the owner its list, since it started.
+        // A replay of a send already taken (its record names this session) finds the first message, whatever the list
+        // is now.
+        if (listed.length > 0 && previous?.conversationId !== target) {
+            if (runs === undefined) {
+                throw new HttpError(
+                    403,
+                    "That linked session has no model to check against the owner's list.",
+                );
+            }
+
+            if (!listed.includes(`${runs.provider}/${runs.modelId}`)) {
+                throw new HttpError(
+                    403,
+                    `That linked session runs on ${runs.provider}/${runs.modelId}, which is not one of the models the owner allows for subagents and linked sessions.`,
+                );
+            }
+        }
 
         await this.#deliver(source, id, user, request.message, request.steer === true, token, () =>
             // Whom it acts for is kept before it is sent: someone else writing there later changes nothing on a repeat.

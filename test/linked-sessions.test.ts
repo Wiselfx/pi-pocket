@@ -306,6 +306,59 @@ test("an unavailable model creates no session", async (t) => {
     );
 });
 
+test("with a list, a linked session runs only on a listed model: the source's if listed, else the first", async () => {
+    const id = await source();
+    const modelOf = async (session: ConversationId) =>
+        (await app.agentState(session))?.model?.modelId;
+    const me = owner(app);
+
+    try {
+        // No list: the source's model, and no other.
+        await app.setSubagentModels(me, []);
+        assert.equal(await modelOf((await start(id)).session), "faux-1");
+        await assert.rejects(start(id, "no-list", "faux/faux-2"), /not allowed[^]*Do not pick/);
+
+        // The source's model is listed: left out, it stays.
+        await app.setSubagentModels(me, ["faux/faux-2", "faux/faux-1"]);
+        assert.equal(await modelOf((await start(id)).session), "faux-1");
+        assert.equal(await modelOf((await start(id, "named", "faux/faux-2")).session), "faux-2");
+
+        // Not listed: the first listed, and the source's own model is refused when named.
+        await app.setSubagentModels(me, ["faux/faux-2"]);
+        const count = app.sessions().length;
+
+        assert.equal(await modelOf((await start(id)).session), "faux-2");
+        await assert.rejects(start(id, "own", "faux/faux-1"), /not allowed[^]*Do not pick/);
+        assert.equal(app.sessions().length, count + 1, "the refused start made nothing");
+    } finally {
+        await app.setSubagentModels(me, []);
+    }
+});
+
+test("with a list, a message goes only to a linked session that runs on a listed model", async () => {
+    const id = await source();
+    const me = owner(app);
+
+    try {
+        await app.setSubagentModels(me, ["faux/faux-1"]);
+        const { session, address } = await start(id);
+
+        await send(id, address, "taken-once");
+        // The owner takes the list away from the model it runs on: no more work for it from another session.
+        await app.setSubagentModels(me, ["faux/faux-2"]);
+        await assert.rejects(send(id, address), /not one of the models the owner allows/);
+        assert.equal((await app.agentState(session))?.model?.modelId, "faux-1");
+        // A replay of the send already taken finds it, whatever the list is now.
+        await send(id, address, "taken-once");
+
+        // No list again: as before.
+        await app.setSubagentModels(me, []);
+        await send(id, address);
+    } finally {
+        await app.setSubagentModels(me, []);
+    }
+});
+
 test("one session starts 12 linked sessions, and no count refuses one", async () => {
     const id = await source();
 

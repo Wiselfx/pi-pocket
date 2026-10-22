@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { awaitWithContext } from "@earendil-works/chord/context";
-import type { Skill } from "@earendil-works/pi-coding-agent";
+import type { ProviderConfig, Skill } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
     ConversationId,
@@ -239,7 +239,7 @@ export interface PocketHost {
      */
     resolveModel(spec: string): ModelRef;
     /**
-     * The models Pi may start subagents on besides their session's own, as the owner allowed them (`provider/modelId`).
+     * The models Pi may start subagents on, as the owner allowed them (`provider/modelId`).
      * Empty, the default: none.
      */
     subagentModels(): readonly string[];
@@ -248,6 +248,13 @@ export interface PocketHost {
      * sign-in expired), or undefined when it may. `fresh` asks the provider's sign-in again first.
      */
     modelProblem(ref: ModelRef, fresh?: boolean): Promise<string | undefined>;
+    /**
+     * Register a model provider with Pi's model runtime, as a Pi extension does: `config` is Pi's own provider
+     * configuration, including the models it starts with and how it refreshes them. The last registration of a name
+     * wins. Returns how to remove it again, which puts back the registration before it; a removal of a registration
+     * that is not the last one changes nothing.
+     */
+    registerModelProvider(provider: string, config: ProviderConfig): () => void;
     /**
      * Shape the request every model call sends: `shape` returns a replacement payload, or undefined to keep it. It runs
      * after Pi and the caller shaped the request, closest to the wire. Returns how to stop shaping. Only the modules
@@ -369,6 +376,17 @@ export interface WebRequest {
     readonly context: Context;
     /** Change the module's documents; refused for viewers and after this request ends. */
     commit<T>(change: (tx: Tx) => T | Promise<T>): Promise<T>;
+    /** The sessions the person who asked can see now, as their session list shows them (archived ones too). */
+    sessions(): readonly WebSession[];
+}
+
+/** A session in a person's session list, as `WebRequest.sessions` gives it. */
+export interface WebSession {
+    readonly id: number;
+    readonly title: string;
+    readonly cwd: string;
+    readonly archived: boolean;
+    readonly updatedAt: number;
 }
 
 /** A route request whose named path parameter resolved to a visible conversation. */

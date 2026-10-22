@@ -27,9 +27,11 @@ A module that calls a member that is not there fails when it first uses it, in e
 
 ## Model requests
 
-`host.shapeModelRequests(shape)` lets a module shape what every model call sends, after Pi and the caller built the request. Return a replacement payload, or nothing to keep it. The effect lasts until you call the returned function, so pass that to `host.onDispose`.
+`host.shapeModelRequests(shape)` lets a module shape what every model call sends, after Pi and the caller built the request. Return a replacement payload, or nothing to keep it. The effect lasts until you call the returned function, so pass that to `web.onDispose`.
 
 A shaper can change what a provider bills, or how it answers. Tell the owner that before you ask them to turn the module on.
+
+`host.registerModelProvider(provider, config)` adds a model provider to Pi, or changes one, with Pi's own provider config. Pass the returned function to `web.onDispose`, so the provider goes with the module. The last registration of a name wins, and a registration with a built-in provider's name and another `baseUrl` sends the owner's stored key there. See [`registerModelProvider`](reference/host.md#registermodelprovider).
 
 ## Types
 

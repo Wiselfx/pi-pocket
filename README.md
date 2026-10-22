@@ -32,6 +32,19 @@ The launcher asks how your devices should connect, then prints the address, a si
 
 While it runs: **q** quit · **r** restart server · **a** change access · **o** open in browser · **s** show QR code.
 
+## Docker and Podman
+
+A container image and a Compose file are included. Extensions, themes, Pi's sign-ins, the database, and the workspace are bind-mounted from the host, so they survive rebuilds and stay editable outside the container.
+
+```bash
+cp .env.example .env    # optional: ports and external folders
+docker compose up -d --build
+# or
+podman compose up -d --build
+```
+
+The owner sign-in link is in the log (`docker compose logs pi-pocket | grep '/login?token='`); swap its container address for the host's. The container starts in `lan` mode by default; set `PI_POCKET_ACCESS` and `PI_POCKET_BIND` in `.env` to change who can reach it. [docs/docker.md](docs/docker.md) has the folders, permissions, and update notes.
+
 ## Features
 
 - **Durable.** Every model call, tool call, and subagent is stored as it happens. Restart the server mid-run and the work continues; a cut-off tool call reruns only if that is safe.
@@ -49,6 +62,7 @@ While it runs: **q** quit · **r** restart server · **a** change access · **o*
 - **Omarchy colors.** Every Omarchy theme's colors, or follow your desktop's live; tiled Hyprland-style windows, a Walker-style launcher (Ctrl/⌘+K) with live color previews, and Hyprland's motion.
 - **Extension gallery.** Find drop-ins and themes other people wrote, read their source or ask Pi to review it, and install them: each file is checked against the index, an extension starts off, and an update shows its diff first. Share your own from Extensions.
 - **Agent Teams.** Off by default. Pi starts linked sessions that work beside the one that started them, and messages them both ways.
+- **Session tags.** Off by default. Shared labels on sessions, shown on their rows, found by search, and used to filter the session list.
 - **Favorite folders.** New session works like a desktop file dialog and opens in the folder you are already in: star a folder to start a session there with Ctrl/⌘+1…9 or from the launcher, or use **New session here** to stay where you are.
 - **Peek tiles.** One click (or Alt+P) shows your other sessions working beside the one you are in: approve their calls from there, and swap between them with a click. Only the tiles on screen stay live, so a long list scrolls cheaply.
 - **Built for phones.** Streaming answers, Pi's tool calls folded into a timeline with diffs and live output, push notifications you can allow or deny from, sharing into Pi from other apps, and a home-screen app.
@@ -154,12 +168,12 @@ Pi knows where Pi Pocket's own documentation is: [docs/index.md](docs/index.md) 
 - Forks are separate sessions; there is no branch tree to switch between inside one session.
 - Pi's own extensions are not supported: Pi Pocket runs its own extensions on Pi Durable, and drop-ins from `~/.pi-pocket/extensions/`. Pi's prompt templates work as slash commands.
 - A git worktree keeps a session's files apart; it is not a sandbox. Pi can still reach everything you can.
-- Artifacts run in an opaque-origin sandbox, so `localStorage` and cookies are unavailable inside them.
+- Artifacts run in an opaque-origin sandbox, so `localStorage` and cookies are unavailable inside them. In the viewer, they can save up to 16 KB of state for each person through the app instead.
 - The browser needs Chromium, Chrome, Brave, or Edge on the server. Its pages live in memory: a restart opens each one again at its last address, but not what was typed into it. Each session's cookies are its own and last until the page closes. A browser installed as a snap (Ubuntu's Chromium) is used only when there is no other; it cannot open files outside your home folder. The list of servers running on the machine is Linux-only. Tested on Linux and macOS; not yet on Windows.
 
 ## Credits
 
-Inspired by [Mario Zechner's demo](https://x.com/badlogicgames/status/2106452296087302173) of his own Pi app. Pi Pocket is an independent project, not affiliated with Earendil. JetBrains Mono and Geist are bundled under the SIL Open Font License ([JetBrains Mono](web/fonts/OFL.txt), [Geist](web/fonts/Geist-OFL.txt)).
+Inspired by [Mario Zechner's demo](https://x.com/badlogicgames/status/2106452296087302173) of his own Pi app. Pi Pocket is an independent project, not affiliated with Earendil. JetBrains Mono, Geist, Inter, Fira Code, IBM Plex Mono, and Iosevka are bundled under the SIL Open Font License ([JetBrains Mono](web/fonts/OFL.txt), [Geist](web/fonts/Geist-OFL.txt), [Inter](web/fonts/Inter-OFL.txt), [Fira Code](web/fonts/FiraCode-OFL.txt), [IBM Plex Mono](web/fonts/IBMPlexMono-OFL.txt), [Iosevka](web/fonts/Iosevka-OFL.txt)), and the [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) icons under the [licenses of their icon sets](web/fonts/NerdFonts-README.txt) ([MIT](web/fonts/NerdFonts-LICENSE.txt) for Nerd Fonts itself). [web/fonts/SOURCES.md](web/fonts/SOURCES.md) says where each came from.
 
 ## License
 

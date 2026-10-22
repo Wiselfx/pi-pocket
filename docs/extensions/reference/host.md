@@ -96,7 +96,7 @@ subagentModels(): readonly string[];
 
 Since 0.13.1 · Stable
 
-The models that the owner lets subagents use, as `provider/modelId`. A subagent can always use the model of its own session. The list is empty by default. The owner sets it in Menu → Providers → Models for subagents.
+The models that the owner lets subagents use, as `provider/modelId`. While the list is empty (the default), a subagent runs on the model of its own session. Once it has models, subagents and linked sessions run only on those: the model of the session when it is listed, else the first listed. The owner sets it in Menu → Providers → Models for subagents.
 
 ### `modelProblem`
 
@@ -107,6 +107,32 @@ modelProblem(ref: ModelRef, fresh?: boolean): Promise<string | undefined>;
 Since 0.13.1 · Stable
 
 Why Pi cannot use a model now, in words that Pi can tell a person. For example, Pi Pocket does not know the model, its provider is not signed in, or its sign-in expired. It is `undefined` when Pi can use the model. With `fresh: true`, it asks the provider about the sign-in again first.
+
+### `registerModelProvider`
+
+```ts
+registerModelProvider(provider: string, config: ProviderConfig): () => void;
+```
+
+Since 0.20.0 · Experimental
+
+Registers a model provider with Pi's model runtime, as a Pi extension does. `config` is Pi's own `ProviderConfig`: the provider's name, base URL, API key, API, headers, and models or `refreshModels` function. When Pi refuses the config, the call throws and changes nothing. Open tabs get the provider's models once Pi refreshed it locally.
+
+The return value removes the provider again. Give it to `web.onDispose`, or the provider stays after the module is edited or turned off:
+
+```ts
+web.onDispose(host.registerModelProvider("example", config));
+```
+
+The last registration of a name wins: Pi uses its config alone, not merged with the one before. Its removal puts back the registration before it, from another module or from an older version that is still in force. A removal of a registration that is not the last one changes nothing in Pi. So a version that a reload replaces can call its removal safely, and a new version that fails to load leaves the old version's provider in place.
+
+A name can be a built-in provider's, or one in Pi's `models.json`. The registration then changes that provider until its removal, and the API key the owner stored for it still applies. With another `baseUrl`, the owner's stored key goes to that address. Say so when you ask the owner to turn the module on.
+
+Two things to know about how Pi refreshes models.
+
+First, registration refreshes models locally only. A provider whose catalog comes from `refreshModels` alone shows no models until a network refresh, as with the app's **Refresh models** action. To look right away, ship a fallback list: a small static `models` with the provider's most common models. The network pass replaces it.
+
+Second, every refresh, even a local one, calls `refreshModels`. When `allowNetwork` is false, return the models you have: `stored?.models ?? []`, or another fallback list. Returning `[]` empties the provider in Pi until the next network pass, because an empty list still counts as the provider's answer.
 
 ### `shapeModelRequests`
 
@@ -236,7 +262,7 @@ Makes a session linked to `source` and sends it `message` as its first message. 
 
 - The new session works in `cwd` when supplied, otherwise the folder of `source`. `cwd` must name an existing folder and uses the normal folder-picker path rules. A blank `cwd` counts as no `cwd`. A relative `cwd` resolves against the folder of the server process, not the folder of the source. `cwd` is since 0.19.0: an older Pi Pocket ignores it and uses the folder of `source`, so a gallery entry that needs it sets `minPocket` to `0.19.0`. It gets a copy of the agent settings of `source`, but not its history.
 - Without `title`, the title is the first line of `message`.
-- `model` is `provider/modelId`. It must be the model of `source`, or a model that the owner lets subagents use. Without it, the session uses the model of `source`.
+- `model` is `provider/modelId`. While the owner's list of models for subagents is empty, it must be the model of `source`. Once the list has models, it must be one of them. Without it, the session uses the model of `source` when the list is empty or has it, else the first listed model.
 - `thinking` is a level no higher than the level of `source`. Without it, the session uses the level of `source`. Pi Pocket lowers it to the highest level that the model has.
 - When Pi cannot use the model now, `start` makes nothing and throws an error.
 
