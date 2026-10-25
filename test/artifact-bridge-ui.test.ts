@@ -1,6 +1,7 @@
 // What an artifact's page may ask of the app (#88, #89), in a real Chromium: its saved state, and a follow-up in the
-// message box, only after the person taps the page, marked as the artifact's, unsent; nothing from a frame inside it, or
-// once it navigates elsewhere; one follow-up every 2 seconds; and a notice, not a message, for a viewer.
+// message box, only after the person taps the page (not after `window.focus()`), marked as the artifact's, unsent;
+// nothing from a frame inside it, or once it navigates elsewhere (not even before that page's load event, and no answer
+// held back reaches it); one follow-up every 2 seconds; and a notice, not a message, for a viewer.
 import {
     type App,
     cleanUp,
@@ -56,20 +57,86 @@ const ask = (message) => new Promise((resolve) => {
     await ask({ type: "pocket-state-set", schema: "v1", state: { count } });
     parent.postMessage({ type: "pocket-follow-up", text: "at load" }, "*");
     const inner = document.createElement("iframe");
-    inner.srcdoc = "<script>parent.parent.postMessage({ type: 'pocket-state-set', requestId: 'inner', schema: 'v1', state: { inner: true } }, '*')<\\/script>";
+    inner.src = "data:text/html," + encodeURIComponent("<script>for (const win of [top, parent]) { try { win.postMessage({ type: 'pocket-state-set', requestId: 'inner', schema: 'v1', state: { inner: true } }, '*'); } catch {} } try { parent.parent.postMessage({ type: 'pocket-state-set', requestId: 'inner', schema: 'v1', state: { inner: true } }, '*'); } catch {}<" + "/script>");
     document.body.append(inner);
 })();
 document.getElementById("go").onclick = () =>
     parent.postMessage({ type: "pocket-follow-up", text: "Tell me about option " + count, selection: { option: count } }, "*");
 </script></body></html>`;
 
-/** Goes elsewhere at once; the page there tries to save state, and to offer a follow-up when tapped. */
-const AWAY = `<!doctype html><html><body><script>
-location.href = "data:text/html," + encodeURIComponent(
-    '<body style="margin:0"><button style="position:fixed;inset:0;width:100%;height:100%" onclick="parent.postMessage({ type: \\'pocket-follow-up\\', text: \\'from elsewhere\\' }, \\'*\\')">x</button>' +
-    '<script>parent.postMessage({ type: "pocket-state-set", requestId: "away", state: { away: true } }, "*")<' + '/script></body>'
-);
+/** Calls `window.focus()`, then asks for a follow-up with no tap; saves what it was told for the test to read. */
+const FOCUS = `<!doctype html><html><body><script>
+setTimeout(() => {
+    window.focus();
+    const requestId = "focus";
+    addEventListener("message", function hear(event) {
+        if (event.source === parent && event.data && event.data.type === "pocket-follow-up") {
+            removeEventListener("message", hear);
+            parent.postMessage({ type: "pocket-state-set", requestId, state: { answer: event.data } }, "*");
+        }
+    });
+    parent.postMessage({ type: "pocket-follow-up", text: "FOCUS_NO_TAP" }, "*");
+}, 700);
 </script></body></html>`;
+
+/** Names its schema with a number, for a get and for a set: both are refused the same way, with no request made. */
+const SCHEMA = `<!doctype html><html><body><script>
+const ask = (message) => new Promise((resolve) => {
+    const requestId = String(Math.random()).slice(2);
+    addEventListener("message", function hear(event) {
+        if (event.source === parent && event.data && event.data.requestId === requestId) {
+            removeEventListener("message", hear);
+            resolve(event.data);
+        }
+    });
+    parent.postMessage({ ...message, requestId }, "*");
+});
+(async () => {
+    const got = await ask({ type: "pocket-state-get", schema: 1 });
+    const set = await ask({ type: "pocket-state-set", schema: 1, state: { n: 1 } });
+    await ask({ type: "pocket-state-set", schema: "v1", state: { got: got.error, set: set.error } });
+})();
+</script></body></html>`;
+
+/** Asks for its state (the test holds the answer back), then goes to the page DEST 0.6 seconds on. */
+const NAV = `<!doctype html><html><body><script>
+parent.postMessage({ type: "pocket-state-get", requestId: "held", schema: "v1" }, "*");
+setTimeout(() => { location.href = "__THERE__"; }, 600);
+</script></body></html>`;
+
+/**
+ * The page NAV goes to (published Markdown, which has no bridge of its own): its scripts run while a slow image holds up its load
+ * event. It tries every way in, and reports to the test server what it hears.
+ */
+const DEST = (base: string) => `<script>
+const log = (what) => fetch("${base}/report?" + encodeURIComponent(what), { mode: "no-cors" });
+addEventListener("error", (event) => log("error " + event.message));
+addEventListener("message", (event) => log("heard " + JSON.stringify(event.data)));
+const channel = new MessageChannel();
+parent.postMessage({ type: "pocket-bridge" }, "*", [channel.port2]);
+parent.postMessage({ type: "pocket-state-set", requestId: "x", schema: "v1", state: { hijacked: true } }, "*");
+window.focus();
+parent.postMessage({ type: "pocket-follow-up", text: "FROM_DEST" }, "*");
+parent.postMessage({ type: "pocket-state-get", requestId: "y", schema: "v1" }, "*");
+log("ready");
+</script>
+<img src="${base}/slow">
+`;
+
+/**
+ * Goes elsewhere at once (to a published page, of the app's own address: the app lets a frame go nowhere else, and the
+ * frame's sandbox sends it no cookie); the page there
+ * tries to save state, and to offer a follow-up when tapped. It is Markdown, which has no bridge of its own.
+ */
+const AWAY = `<!doctype html><html><body><script>
+location.href = "__THERE__";
+</script></body></html>`;
+
+const ELSEWHERE = `<button style="position:fixed;inset:0;width:100%;height:100%" onclick="parent.postMessage({ type: 'pocket-follow-up', text: 'from elsewhere' }, '*')">x</button>
+<script>
+parent.postMessage({ type: "pocket-state-set", requestId: "away", state: { away: true } }, "*");
+</script>
+`;
 
 let app: App;
 let server: Server;
@@ -78,6 +145,11 @@ let page: BrowserPage;
 let base = "";
 let session: ConversationId;
 let calls = 0;
+/** A server of its own for the page NAV goes to: a slow image, and where that page reports. */
+let elsewhere: Server;
+let elsewhereBase = "";
+let heard: string[] = [];
+let slow: { end: () => void }[] = [];
 /** What a busy machine (the whole suite at once) may take to open a viewer and load its page. */
 const SLOW = 30_000;
 
@@ -146,9 +218,9 @@ const savedFor = async (artifact: string) =>
         owner(app).id
     ]?.value;
 
-async function publish(id: string, content: string) {
+async function publish(id: string, content: string, type?: string) {
     await createArtifacts({} as PocketHost).tools![0]!.execute(
-        { id, title: id === "calc" ? "Calculator" : "Away", content } as never,
+        { id, title: id === "calc" ? "Calculator" : id, content, type } as never,
         {
             conversationId: session,
             taskId: 9000 + (calls += 1),
@@ -170,7 +242,37 @@ before(async () => {
     app.config.lastModel ??= { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
     ({ id: session } = await app.commands.createSession(owner(app), { cwd: work }));
     await publish("calc", CALC);
-    await publish("away", AWAY);
+    await publish("focus", FOCUS);
+    await publish("schema", SCHEMA);
+    elsewhere = createServer((request, response) => {
+        const url = new URL(request.url ?? "/", "http://x");
+
+        if (url.pathname === "/slow") {
+            slow.push(response);
+
+            return;
+        }
+
+        if (url.pathname === "/report") {
+            heard.push(decodeURIComponent(url.search.slice(1)));
+            response.writeHead(204).end();
+
+            return;
+        }
+
+        response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => elsewhere.listen(0, "127.0.0.1", resolve));
+    elsewhereBase = `http://127.0.0.1:${(elsewhere.address() as { port: number }).port}`;
+    // A frame goes nowhere but a page of the app's own address, and signed out (its sandbox sends no cookie): a
+    // published page.
+    await publish("elsewhere", ELSEWHERE, "markdown");
+    await publish("dest", DEST(elsewhereBase), "markdown");
+
+    const there = async (id: string) => (await app.shares.create(session, owner(app), { id })).path;
+
+    await publish("away", AWAY.replace("__THERE__", await there("elsewhere")));
+    await publish("nav", NAV.replace("__THERE__", await there("dest")));
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
     );
@@ -196,6 +298,12 @@ before(async () => {
 });
 
 after(async () => {
+    for (const response of slow) {
+        response.end();
+    }
+
+    elsewhere?.closeAllConnections();
+    elsewhere?.close();
     await browsers?.closeAll({ final: true });
     server?.closeAllConnections();
     server?.close();
@@ -272,6 +380,106 @@ test("a frame that went elsewhere is not heard", real, async () => {
     await closeSheet();
 });
 
+test("focus is not a tap: window.focus() before a follow-up gets none", real, async () => {
+    await closeSheet();
+    await setBox("");
+    await openViewer("focus");
+    await until(async () => (await savedFor("focus")) !== undefined, "the page's note", SLOW);
+    assert.deepEqual(await savedFor("focus"), {
+        answer: {
+            type: "pocket-follow-up",
+            ok: false,
+            error: "Only after the person taps the page",
+        },
+    });
+    assert.equal(await boxText(), "", "the draft stays as it was");
+    await closeSheet();
+});
+
+test(
+    "a page it goes to, before its load event, gets no line; nor does a held answer",
+    real,
+    async () => {
+        await closeSheet();
+        await setBox("");
+        heard = [];
+        // The state is saved, and the answer to the first page's ask is held back until the page has gone.
+        await inPage(`
+        const { api, store } = await import("/store.js");
+        await api("c/" + store.state.conversationId + "/artifact-state/nav", { state: { secret: 1 }, schema: "v1" });
+        const real = window.fetch;
+        window.__realFetch = real;
+        window.__held = [];
+        window.fetch = (url, init) =>
+            String(url).includes("artifact-state/nav") && (init?.method ?? "GET") === "GET"
+                ? new Promise((resolve, reject) => window.__held.push(() => real(url, init).then(resolve, reject)))
+                : real(url, init);
+        return "null";
+    `);
+        await openViewer("nav");
+        await until(async () => heard.includes("ready"), "the page it goes to", SLOW);
+        // That page is still loading (its image is slow): it has tried everything meanwhile.
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        assert.deepEqual(await savedFor("nav"), { secret: 1 }, "it saved nothing");
+        assert.equal(await boxText(), "", "it offered no follow-up");
+        assert.equal(slow.length > 0, true, "its image was still loading");
+
+        // Now the first page's answer comes.
+        const held = await inPage<number>(
+            `const held = window.__held.splice(0); held.forEach((go) => go()); return JSON.stringify(held.length)`,
+        );
+
+        assert.equal(held, 1, "the first page's ask was held");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        assert.deepEqual(
+            heard.filter((each) => each !== "ready"),
+            [],
+            "the page it goes to heard nothing",
+        );
+        await inPage(
+            `window.fetch = (await import("/store.js")).api && window.fetch; return "null"`,
+        );
+        await closeSheet();
+    },
+);
+
+test("a schema that is not a string is refused for a get and a set alike", real, async () => {
+    await closeSheet();
+    await openViewer("schema");
+    await until(async () => (await savedFor("schema")) !== undefined, "the page's note", SLOW);
+    assert.deepEqual(await savedFor("schema"), {
+        got: "A schema is a string",
+        set: "A schema is a string",
+    });
+    await closeSheet();
+});
+
+test("a selection cannot end the follow-up's JSON fence", real, async () => {
+    const selection = { a: "x```\n# not data ```` end" };
+    const text = await inPage<string>(`
+        const { followUpText } = await import("/artifact-bridge.js");
+        return JSON.stringify(followUpText("hi", ${JSON.stringify(selection)}, "the page"));
+    `);
+    const lines = text.split("\n");
+    const open = lines.find((line) => line.endsWith("json"))!;
+    const fence = open.slice(0, -4);
+
+    assert.ok(fence.length >= 5, "longer than the longest run inside");
+    assert.equal(lines.at(-1), fence);
+    assert.equal(
+        lines.filter((line) => line.startsWith(fence)).length,
+        2,
+        "the fence opens once and closes once",
+    );
+    assert.equal(
+        await inPage<string>(
+            `const { followUpText } = await import("/artifact-bridge.js"); return JSON.stringify(followUpText("hi", { a: 1 }, "x"))`,
+        ),
+        'From x:\nhi\n\n```json\n{\n  "a": 1\n}\n```',
+        "an ordinary selection keeps three",
+    );
+});
+
 test("HTML run from a reply: one follow-up every 2 seconds", real, async () => {
     const button = `<button id=b style="position:fixed;inset:0;width:100%;height:100%" onclick="parent.postMessage({type:'pocket-follow-up',text:'ran'},'*')">x</button>`;
 
@@ -309,6 +517,39 @@ test("HTML run from a reply: one follow-up every 2 seconds", real, async () => {
         "the second, too soon, is refused",
     );
 });
+
+test(
+    "a page that hides a script in an odd comment before the bridge still needs a real tap",
+    real,
+    async () => {
+        await closeSheet();
+        await setBox("");
+        // A browser ends the comment at "<!-->": the script after it runs, and tries to call the bridge's tap listener.
+        await publish(
+            "odd-comment",
+            `<!--><script>
+      const listen = window.addEventListener.bind(window);
+      window.addEventListener = (type, callback, ...rest) => {
+        if (type === "mousedown") { callback({ isTrusted: true }); }
+        return listen(type, callback, ...rest);
+      };
+    </script><!-- -->
+    <!doctype html><script>
+      setTimeout(() => parent.postMessage({ type: "pocket-follow-up", text: "NO_TAP" }, "*"), 300);
+    </script>`,
+        );
+        await until(
+            () =>
+                inPage<boolean>(
+                    "return (await import('/store.js')).store.state.view.artifacts.some((each) => each.id === 'odd-comment')",
+                ),
+            "the artifact listed",
+        );
+        await openViewer("odd-comment");
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        assert.equal(await boxText(), "", "nobody tapped the page");
+    },
+);
 
 test("a viewer gets a notice, not a message", real, async () => {
     const viewer = app.config.addUser("Vee", "viewer");

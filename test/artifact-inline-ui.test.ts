@@ -495,3 +495,38 @@ test("a call that failed shows its step and its reason, not a card", real, async
         SLOW,
     );
 });
+
+test(
+    "a preview of a page with an inline SVG or image has no scrollbar of its own",
+    real,
+    async () => {
+        await page.setViewport({ width: 390, height: 844, scale: 1, mobile: true });
+        await page.navigate(`${base}/s/${session}`);
+        await waitFor(".composer textarea", "the message box");
+
+        const sizes = await inPage<{ page: number; frame: number }>(`
+        const { render } = await import("preact");
+        const { html } = await import("/ui.js");
+        const { HtmlPreview } = await import("/rich.js");
+        const host = document.createElement("div");
+        document.body.append(host);
+        render(
+            html\`<\${HtmlPreview}
+                source=\${'<!doctype html><body style="margin:8px"><svg width="300" height="200"><rect width="300" height="200"/></svg></body>'}
+            />\`,
+            host,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const frame = host.querySelector("iframe");
+        return JSON.stringify({
+            page: frame.contentDocument.documentElement.scrollHeight,
+            frame: frame.clientHeight,
+        });
+    `);
+
+        assert.ok(
+            sizes.frame >= sizes.page,
+            `the frame (${sizes.frame}) shows all its page (${sizes.page})`,
+        );
+    },
+);

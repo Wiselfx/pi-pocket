@@ -21,6 +21,10 @@ const dropIns = join(root, "data", "extensions");
 
 /** Ctrl+W as in a terminal, and Ctrl+E, which only counts and lets the key through. */
 const KEYS_JS = `export default (pocket) => {
+    pocket.composerKey({
+        id: "conflicts", keys: ["Alt+N", "Mod+K"], label: "Take an app key",
+        run(box) { globalThis.conflictWhere = box.where; globalThis.conflicts = (globalThis.conflicts ?? 0) + 1; },
+    });
 	pocket.composerKey({
 		id: "delete-word",
 		keys: "Ctrl+W",
@@ -157,6 +161,46 @@ test(
     },
 );
 
+test("a taken app key opens neither a sheet nor the launcher, in both boxes", real, async () => {
+    for (const where of ["session", "pip"]) {
+        if (where === "pip") {
+            await inPage(`(await import("/pip.js")).openPip(); return "null"`);
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify(Boolean(document.querySelector(".pip-composer textarea")))`,
+                    ),
+                "PiP's box",
+            );
+        }
+
+        const selector = where === "pip" ? ".pip-composer textarea" : ".composer textarea";
+
+        for (const init of [
+            { key: "n", code: "KeyN", altKey: true },
+            { key: "k", code: "KeyK", ctrlKey: true },
+        ]) {
+            await inPage(`
+                document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...${JSON.stringify(init)} }));
+                return "null";
+            `);
+            assert.equal(
+                await inPage<string>(`return JSON.stringify(globalThis.conflictWhere)`),
+                where,
+            );
+            assert.equal(
+                await inPage<boolean>(
+                    `const { store } = await import("/store.js"); return JSON.stringify(Boolean(store.state.sheet || store.state.launcher))`,
+                ),
+                false,
+            );
+        }
+    }
+
+    assert.equal(await inPage<number>(`return JSON.stringify(globalThis.conflicts)`), 4);
+    await inPage(`(await import("/pip.js")).closePip(); return "null"`);
+});
+
 test("the Keyboard shortcuts sheet lists the modules' keys", real, async () => {
     await inPage(`document.activeElement?.blur(); return "null"`);
     await page.press("?");
@@ -172,3 +216,46 @@ test("the Keyboard shortcuts sheet lists the modules' keys", real, async () => {
     assert.match(text, /Delete the word before the caret \(keys\)/);
     assert.match(text, /Count \(keys\)/);
 });
+
+test(
+    "Alt+↓ in the model menu still switches sessions: the list keeps only plain arrows",
+    real,
+    async () => {
+        const other = await newSession(app);
+
+        await until(
+            () =>
+                inPage<boolean>(
+                    `const { store } = await import("/store.js"); return JSON.stringify(store.state.sessions.some((each) => each.id === ${Number(other)}))`,
+                ),
+            "the second session in the list",
+        );
+        await inPage(`(await import("/store.js")).openSheet({ type: "model" }); return "null"`);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(Boolean(document.querySelector('[role="dialog"][aria-label="Model"]')))`,
+                ),
+            "the model menu",
+        );
+        const before = await inPage<number>(
+            `return JSON.stringify((await import("/store.js")).store.state.conversationId)`,
+        );
+
+        await inPage(`
+        const menu = document.querySelector('[role="dialog"][aria-label="Model"]');
+        const at = menu.querySelector(".pop-menu-search input") ?? menu;
+        at.focus();
+        at.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", altKey: true, bubbles: true, cancelable: true }));
+        return "null";
+    `);
+        await until(
+            async () =>
+                (await inPage<number>(
+                    `return JSON.stringify((await import("/store.js")).store.state.conversationId)`,
+                )) !== before,
+            "another session open",
+        );
+        await inPage(`(await import("/store.js")).closeSheet(); return "null"`);
+    },
+);

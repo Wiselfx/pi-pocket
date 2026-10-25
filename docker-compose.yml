@@ -64,6 +64,11 @@ services:
         #
         # user: "1000:1000"
 
+        # No process in the container gains privileges it did not start with (setuid,
+        # file capabilities). Pi's commands and the unsandboxed Chromium run with less.
+        security_opt:
+            - no-new-privileges:true
+
         healthcheck:
             test:
                 [

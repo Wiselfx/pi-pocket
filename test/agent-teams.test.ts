@@ -112,3 +112,34 @@ test("agents write to each other in ASD-STE100: team messages, replies, and suba
         /A message with the marker .*\[via linked session …\].* comes from another agent \(PiP/,
     );
 });
+
+test("with a list and a model that is not on it, the prompt lists the models with facts, and a start without a model is told to choose", async () => {
+    const me = owner(app);
+
+    try {
+        // The session is on faux-1; only faux-2 is listed.
+        await app.setSubagentModels(me, ["faux/faux-2"]);
+        const id = await newSession(app);
+
+        requests.length = 0;
+        await say(app, id, "START_A_TEAM");
+        const all = requests.join("\n");
+
+        assert.match(all, /- faux\/faux-2: /);
+        assert.match(all, /Match the model to the work/);
+        assert.match(all, /Your model is not on the list, so model is required/);
+        assert.equal(
+            app.sessions().filter((session) => session.linkedFrom?.id === Number(id)).length,
+            0,
+            "nothing started without a model",
+        );
+
+        // The tool's refusal tells it to choose from the list, not to stop and ask the person.
+        const refusal = all.match(/A model is required[^"]*/)?.[0] ?? "";
+
+        assert.match(refusal, /faux\/faux-2/);
+        assert.doesNotMatch(refusal, /stop and tell the person/);
+    } finally {
+        await app.setSubagentModels(me, []);
+    }
+});

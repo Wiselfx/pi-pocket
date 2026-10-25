@@ -301,19 +301,16 @@ test(
             };
 
             assert.equal(state.open, true);
-            // A frame comes as Chromium paints one; until then the panel's poll gets 204.
+            // The first frame comes a moment after the page opens: until then, the answer is 204.
             let frame = await request(viewer.token, `c/${id}/browser/frame?after=0`);
 
             await until(async () => {
-                if (frame.status === 200) {
-                    return true;
+                if (frame.status === 204) {
+                    frame = await request(viewer.token, `c/${id}/browser/frame?after=0`);
                 }
 
-                frame = await request(viewer.token, `c/${id}/browser/frame?after=0`);
-
-                return frame.status === 200;
-            }, "the browser frame");
-
+                return frame.status !== 204;
+            }, "the first frame");
             assert.equal(frame.status, 200);
             assert.equal(frame.headers.get("content-type"), "image/jpeg");
             assert.equal(

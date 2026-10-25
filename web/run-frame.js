@@ -60,9 +60,9 @@ export function RunFrame({
     const [height, fitHeight, resetFit] = useFitHeight(240, MIN_HEIGHT, MAX_HEIGHT);
 
     // It may offer a follow-up for the message box, as an artifact may; `from` names it there. It keeps state only as
-    // an artifact (`artifact`, its id): a reply's HTML has none. Its frame page loads, then the HTML it writes in:
-    // 2 loads are its own.
-    useArtifactBridge(ref, { artifact, source: from, pages: 2 });
+    // an artifact (`artifact`, its id): a reply's HTML has none. Its frame page opens the line to the app, and the HTML
+    // it writes in keeps it (`ARTIFACT_BRIDGE`, `src/server/http/artifacts.ts`).
+    useArtifactBridge(ref, { artifact, source: from });
 
     // Listening from the moment the frame is in the page, before it can load: it says it is ready only once.
     useLayoutEffect(() => {

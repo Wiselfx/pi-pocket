@@ -67,8 +67,13 @@ export function ArtifactViewer({ id, version }) {
     const artifact = view.artifacts.find((each) => each.id === id);
     const frame = useRef(null);
 
-    // What its page may ask: a follow-up in the message box, and its own saved state (`artifact-bridge.js`).
-    useArtifactBridge(frame, { artifact: id, source: `the artifact “${artifact?.title ?? id}”` });
+    // What its page may ask: a follow-up in the message box, and its own saved state (`artifact-bridge.js`). Only an HTML
+    // page has the bridge: a Markdown or SVG page has no script of the app's to open the line.
+    useArtifactBridge(frame, {
+        artifact: id,
+        source: `the artifact “${artifact?.title ?? id}”`,
+        enabled: artifact?.type === "html",
+    });
     const [shown, setShown] = useState(version ?? artifact?.versions.at(-1)?.version);
     const [nonce, setNonce] = useState(0);
     const latest = artifact?.versions.at(-1)?.version;

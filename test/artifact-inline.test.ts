@@ -23,6 +23,7 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import createArtifacts, { slugify } from "../src/server/extensions/artifacts.ts";
 import type { PocketHost } from "../src/server/host.ts";
 import { createHandler } from "../src/server/http.ts";
+import { withBridge } from "../src/server/http/artifacts.ts";
 
 const PAGE = `<!doctype html><html><body><h1>Loan</h1><input id="rate" value="4"></body></html>`;
 
@@ -95,10 +96,13 @@ async function results(id: ConversationId) {
     );
 }
 
-/** The page as a person with `token` gets it, or none. */
+/** The page as a person with `token` gets it in a tab of its own (with no bridge), or none. */
 async function page(token: string | undefined, id: ConversationId, path: string) {
     const response = await fetch(`http://127.0.0.1:${port}/a/${id}/${path}`, {
-        headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+        headers: {
+            "sec-fetch-dest": "document",
+            ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        },
     });
 
     return { status: response.status, text: await response.text() };
@@ -142,6 +146,8 @@ test("the module has both tools, and the guide says when to use each", async () 
 
     assert.match(withBoth, /artifact_inline shows the page as a card in your reply/);
     assert.match(withBoth, /only a call you make directly shows a card/i);
+    assert.match(withBoth, /schema, optional, is a string such as "v1"/);
+    assert.match(withBoth, /focus alone does not count/);
     // A session without the tool (PiP's) is not told about it.
     const without = await render(["artifact"]);
 
@@ -191,6 +197,58 @@ test("it shares the artifact tool's store: the page is served, and a Markdown ar
     assert.equal(slugify("Loan Calc"), "loan-calc");
 });
 
+test("a frame's page starts with the bridge's script, after the doctype; a tab's or a fetch's is as written", async () => {
+    // With no Sec-Fetch-Dest (an older browser, a proxy that drops it), the bridge goes in too.
+    const id = await newSession(app);
+
+    await inlineCall(id, 850_000 + (calls += 1), "bridge")({ content: PAGE });
+    const me = app.config.ownerToken;
+    const get = async (dest?: string) =>
+        (
+            await fetch(`http://127.0.0.1:${port}/a/${id}/loan-calc/1`, {
+                headers: {
+                    authorization: `Bearer ${me}`,
+                    ...(dest ? { "sec-fetch-dest": dest } : {}),
+                },
+            })
+        ).text();
+
+    assert.equal(await get("document"), PAGE);
+    assert.equal(await get("empty"), PAGE);
+    const framed = await get("iframe");
+
+    assert.equal(await get(), framed, "no header: the bridge too");
+
+    assert.ok(framed.startsWith("<!doctype html><script>"), "after the doctype: no quirks mode");
+    assert.ok(
+        framed.endsWith(PAGE.slice("<!doctype html>".length)),
+        "the page follows, as written",
+    );
+    assert.match(framed, /structuredClone/);
+
+    // Before a doctype only white space and a byte order mark are skipped: the bridge comes before any comment, odd
+    // ones too, which a browser can end where a pattern would not (`<!-->` is a whole comment), and before any other
+    // white space (a no-break space is text to a browser).
+    const tag = framed.slice(
+        "<!doctype html>".length,
+        framed.indexOf("</script>") + "</script>".length,
+    );
+
+    for (const page of [
+        "<!--><script>early()</script><!-- -->",
+        "<!---><script>early()</script>-->",
+        "<!-- a --><!doctype html><script>early()</script>",
+        "\u00a0<!doctype html><script>early()</script>",
+    ]) {
+        assert.equal(withBridge(page), tag + page, JSON.stringify(page));
+    }
+
+    assert.equal(
+        withBridge("\uFEFF \n<!DOCTYPE html><p>"),
+        "\uFEFF \n<!DOCTYPE html>" + tag + "<p>",
+    );
+});
+
 test("a replayed call finds its version; another call of the same task makes the next one", async () => {
     const id = await newSession(app);
     const call = inlineCall(id, 810_000 + (calls += 1), "one");
@@ -222,7 +280,12 @@ test("it takes content or nonempty edits, not both, not a path, and keeps the si
     await assert.rejects(call({}), /exactly one of/);
     await assert.rejects(
         call({ content: PAGE, edits: [{ oldText: "a", newText: "b" }] }),
-        /exactly one/,
+        (error: Error) => {
+            // It has no path: the message must not name one.
+            assert.equal(error.message, "Give exactly one of content or nonempty edits.");
+
+            return true;
+        },
     );
     await assert.rejects(call({ edits: [] }), /exactly one/);
     await assert.rejects(
@@ -235,6 +298,21 @@ test("it takes content or nonempty edits, not both, not a path, and keeps the si
     await assert.rejects(call({ content: "x".repeat(2_000_001) }), /limited to/);
     await call({ content: PAGE });
     await assert.rejects(call({ edits: [{ oldText: "absent", newText: "b" }] }), /not found/);
+});
+
+test("the result says a card shows only for a direct call, not for one inside codemode", async () => {
+    const id = await newSession(app);
+    const direct = await inlineCall(id, 840_000 + (calls += 1), "call_direct")({ content: PAGE });
+    const nested = await inlineCall(
+        id,
+        840_000 + (calls += 1),
+        "call_script/1",
+    )({ content: PAGE, id: "from-script" });
+    const text = (result: typeof direct) => (result.output![0] as { text: string }).text;
+
+    assert.match(text(direct), /It shows as a card in your reply/);
+    assert.match(text(nested), /does not show as a card here/);
+    assert.doesNotMatch(text(nested), /It shows as a card/);
 });
 
 test("a fork keeps every version its cards name, and an update there leaves the original alone", async () => {
@@ -324,7 +402,7 @@ test("an artifact with inline versions stays HTML, so an old card keeps showing 
 
     assert.match(
         (first.output as unknown as { text: string }[])[0]!.text,
-        /only a call made directly, not inside codemode/,
+        /It shows as a card in your reply, and keeps showing version 1/,
     );
     await assert.rejects(
         direct(task + 1, { type: "markdown", content: "# no" }),
@@ -349,4 +427,98 @@ test("an artifact with inline versions stays HTML, so an old card keeps showing 
         context,
     );
     assert.equal((await app.artifactBody(id, "other", undefined)).meta.type, "markdown");
+});
+
+test("one tap serves one follow-up: no other event of the same tap gives it back", async () => {
+    const html = withBridge("");
+    const body = html.slice(
+        html.indexOf("<script>(() => {") + 16,
+        html.lastIndexOf("})();</script>"),
+    );
+    const heard: string[] = [];
+    // The channels it opens, to close after: an open port keeps the test running.
+    const channels: MessageChannel[] = [];
+    const Channel = class extends MessageChannel {
+        constructor() {
+            super();
+            channels.push(this);
+        }
+    };
+    const listeners = new Map<string, ((event: unknown) => void)[]>();
+    const parent = {
+        postMessage: (_message: unknown, _origin: string, ports?: MessagePort[]) => {
+            if (ports?.[0]) {
+                ports[0].onmessage = (event) => heard.push(event.data.text);
+            }
+        },
+    };
+    const window = {
+        parent,
+        addEventListener: (type: string, listener: (event: unknown) => void) =>
+            listeners.set(type, [...(listeners.get(type) ?? []), listener]),
+        dispatchEvent: () => true,
+        setTimeout,
+    };
+
+    new Function(
+        "window",
+        "self",
+        "location",
+        "performance",
+        "structuredClone",
+        "MessageEvent",
+        "MessageChannel",
+        body,
+    )(
+        window,
+        { origin: "null" },
+        { origin: "null" },
+        performance,
+        structuredClone,
+        class {},
+        Channel,
+    );
+
+    const fire = (type: string, fields: object = {}) => {
+        for (const listener of listeners.get(type) ?? []) {
+            listener({ isTrusted: true, key: "a", ...fields });
+        }
+    };
+
+    const ask = (text: string) =>
+        (window.parent as typeof parent).postMessage({ type: "pocket-follow-up", text }, "*");
+
+    // A mouse's click: the page spends the tap at its first event, then asks again after each later one.
+    fire("pointerdown", { pointerType: "mouse" });
+    ask("click");
+
+    for (const type of ["mousedown", "pointerup", "mouseup", "click"]) {
+        fire(type, { pointerType: "mouse" });
+        ask(`after ${type}`);
+    }
+
+    // A finger's tap, the same.
+    fire("pointerdown", { pointerType: "touch" });
+    fire("touchstart");
+    fire("pointerup", { pointerType: "touch" });
+    ask("tap");
+
+    for (const type of ["touchend", "mousedown", "mouseup", "click"]) {
+        fire(type, { pointerType: "touch" });
+        ask(`after ${type}`);
+    }
+
+    // A key held down: its repeats are not taps.
+    fire("keydown");
+    ask("key");
+    fire("keydown", { repeat: true });
+    ask("after a repeat");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    for (const channel of channels) {
+        channel.port1.close();
+        channel.port2.close();
+    }
+
+    assert.deepEqual(heard, ["click", "tap", "key"]);
 });

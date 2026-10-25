@@ -140,10 +140,10 @@ const guide = (
 - HTML artifacts open in a sandboxed frame on the user's device (often a phone). They cannot reach this app, its cookies, or the parent page. Make them self-contained, responsive (include a viewport meta tag), and touch-friendly.
 - Load libraries from a CDN with full URLs, such as https://esm.sh or https://cdn.jsdelivr.net. For ES modules that import bare specifiers (three.js addons import "three"), add an import map, for example: <script type="importmap">{"imports":{"three":"https://esm.sh/three@0.170.0","three/addons/":"https://esm.sh/three@0.170.0/examples/jsm/"}}</script>
 - Show loading and error states inside the page (window.onerror, a visible message), so a broken artifact explains itself.
-- In the app's viewer, an HTML artifact can ask the app for two things with parent.postMessage(message, "*"). Answers come as message events: take only those with event.source === parent.
-  - {type:"pocket-follow-up", text, selection}: puts a message in the person's message box, for them to read and send; it is never sent by itself, and the viewer closes so the box shows. Send it from a button's click: the app takes it only after the person taps the page, once every 2 seconds. text is up to 2,000 characters; selection, optional, is JSON up to 2,000. The app answers {type:"pocket-follow-up", ok, error}. Use it for "Ask Pi about this" buttons.
-  - {type:"pocket-state-get", requestId, schema} and {type:"pocket-state-set", requestId, state, schema}: load and save up to 16 KB of JSON for the person using the artifact, so its controls survive a reload and follow them to other devices. requestId is 1 to 64 letters, digits, and _ . : - (others get no answer). The app answers {type:"pocket-state", requestId, ok, state, at, error}; state is null when nothing is saved. A set with state null clears it. Change schema when the state's shape changes: older state then reads as null. Save after changes settle (at most 20 saves in 10 seconds).
-  - Only the artifact's own page is heard: once it navigates elsewhere, nothing is. Neither works in a published link or a tab of its own: the page must still work when no answer comes.
+- In the app's viewer, an HTML artifact can ask the app for two things with parent.postMessage(message, "*"). Answers come as message events: take only those with event.source === parent. Only the page the frame first loads is heard: a page it goes on to (a link, location) gets no answer.
+  - {type:"pocket-follow-up", text, selection}: puts a message in the person's message box, for them to read and send; it is never sent by itself, and the viewer closes so the box shows. Send it from a button's click or tap: the app takes it only right after the person taps or presses a key on the page (focus alone does not count; a tap serves one follow-up), and once every 2 seconds. text is up to 2,000 characters; selection, optional, is JSON up to 2,000. The app answers {type:"pocket-follow-up", ok, error}. Use it for "Ask Pi about this" buttons.
+  - {type:"pocket-state-get", requestId, schema} and {type:"pocket-state-set", requestId, state, schema}: load and save up to 16 KB of JSON for the person using the artifact, so its controls survive a reload and follow them to other devices. requestId is 1 to 64 letters, digits, and _ . : - (others get no answer). The app answers {type:"pocket-state", requestId, ok, state, at, error}; state is null when nothing is saved. A set with state null clears it. schema, optional, is a string such as "v1" (up to 64 letters, digits, and . _ : -; a number is refused): change it when the state's shape changes, and older state then reads as null. Save after changes settle (at most 20 saves in 10 seconds).
+  - Only HTML artifacts have this (not Markdown or SVG). Neither works in a published link or a tab of its own: the page must still work when no answer comes.
 - Reuse the id to publish a new version. For small fixes, send edits against the latest version instead of the whole content.
 ${inline ? INLINE_GUIDE : ""}- To publish an existing local HTML, Markdown, or SVG file without repeating its contents, give path instead of content or edits. This copies a UTF-8 snapshot (up to 2,000,000 bytes), not a live link or its neighboring assets. Everyone who can see the conversation can open the snapshot.`;
 
@@ -197,7 +197,11 @@ async function publish(
         ).length;
 
         if (inputs !== 1 || args.edits?.length === 0) {
-            throw new Error("Give exactly one of content, nonempty edits, or path.");
+            throw new Error(
+                inline
+                    ? "Give exactly one of content or nonempty edits."
+                    : "Give exactly one of content, nonempty edits, or path.",
+            );
         }
 
         let content: string;
@@ -317,7 +321,12 @@ async function publish(
             {
                 type: "text",
                 text: inline
-                    ? `Published "${args.title}" as artifact ${id}, version ${version}. It shows as a card in your reply (only a call made directly, not inside codemode), and keeps showing version ${version}.`
+                    ? `Published "${args.title}" as artifact ${id}, version ${version}. ${
+                          // A script's nested calls have ids of the form `<codemode call>/<n>`.
+                          api.callId.includes("/")
+                              ? "It does not show as a card here: this call ran inside codemode, so the version has no card."
+                              : `It shows as a card in your reply, and keeps showing version ${version}.`
+                      }`
                     : `Published "${args.title}" as artifact ${id}, version ${version}. The user opens it from the artifact card.`,
             },
         ],

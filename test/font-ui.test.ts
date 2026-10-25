@@ -51,6 +51,23 @@ type Look = {
     italics: string[];
 };
 
+/**
+ * Open a sheet, or close it (null), and wait until the app shows it so. Not awaited in the script that asks: a promise a
+ * script waits on can be collected before it settles, which fails the call.
+ */
+async function sheet(type: string | null): Promise<void> {
+    await page.evaluate(`
+        import("/store.js").then(({ openSheet, closeSheet }) =>
+            ${type === null ? "closeSheet()" : `openSheet({ type: ${JSON.stringify(type)} })`},
+        );
+        "asked";
+    `);
+    await see(
+        `return JSON.stringify(((await import("/store.js")).store.state.sheet?.type ?? null) === ${JSON.stringify(type)})`,
+        type === null ? "the sheet closed" : `the ${type} sheet`,
+    );
+}
+
 /** Open the session afresh, as a reload would, and say which fonts it uses where. */
 let opened = 0;
 
@@ -90,7 +107,7 @@ async function open(): Promise<Look> {
 
 /** Choose a theme in Appearance, as a person does. */
 async function choose(name: string): Promise<void> {
-    await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+    await sheet("appearance");
     await see(
         `return JSON.stringify([...document.querySelectorAll(".look-grid > *")].some((card) => card.textContent.includes(${JSON.stringify(name)})))`,
         `the ${name} theme`,
@@ -104,7 +121,7 @@ async function choose(name: string): Promise<void> {
         `return JSON.stringify(document.documentElement.dataset.theme !== "pocket")`,
         `${name} in use`,
     );
-    await page.evaluate(`(await import("/store.js")).closeSheet()`);
+    await sheet(null);
 }
 
 before(async () => {
@@ -309,16 +326,16 @@ test(
         await page.evaluate(`localStorage.clear()`);
         await open();
         // The app's own look: its fonts, and a way to a copy that can change, not menus.
-        await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+        await sheet("appearance");
         await see(
             `const tools = document.querySelector(".font-tools");
 
             return JSON.stringify(tools?.querySelector(".font-title").textContent === "Fonts for Pocket" && tools.querySelector("select") === null && tools.textContent.includes("Geist") && tools.textContent.includes("JetBrains Mono") && tools.textContent.includes("Duplicate to change"))`,
             "Pocket's fonts, to duplicate",
         );
-        await page.evaluate(`(await import("/store.js")).closeSheet()`);
+        await sheet(null);
         await choose("Reader");
-        await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+        await sheet("appearance");
         await see(
             `return JSON.stringify(document.querySelector(".font-title")?.textContent === "Fonts for Reader" && [...document.querySelectorAll(".font-tools select")].map((menu) => menu.value).join() === "Pocket Inter,Pocket Fira Code")`,
             "the menus showing the theme's fonts",
@@ -328,7 +345,19 @@ test(
             `return JSON.stringify(getComputedStyle(document.querySelector(".font-preview code")).fontFamily.startsWith('"Pocket Iosevka"'))`,
             "the preview in the new code font",
         );
-        await page.evaluate(`(await import("/store.js")).closeSheet()`);
+        await page.evaluate(`document.querySelector('.font-tools [role="switch"]').click()`);
+        await see(
+            `return JSON.stringify(getComputedStyle(document.querySelector(".font-preview code")).fontVariantLigatures === "none")`,
+            "ligatures switched off",
+        );
+        await page.evaluate(
+            `[...document.querySelectorAll('.font-tools button')].find((button) => button.textContent.trim() === "Theme's own").click()`,
+        );
+        await see(
+            `return JSON.stringify(getComputedStyle(document.querySelector(".font-preview code")).fontVariantLigatures === "contextual")`,
+            "the theme's own ligatures restored",
+        );
+        await sheet(null);
 
         const shown = await open();
 
@@ -341,6 +370,34 @@ test(
         );
     },
 );
+
+test("message jumps use the app's motion choice instead of the OS query", real, async () => {
+    await open();
+    const modes = await inPage<string[]>(`
+        const { setPrefs } = await import('/theme.js');
+        const { jumpToEntry } = await import('/chat.js');
+        const id = Number(document.querySelector('[id^="entry-"]').id.slice(6));
+        const scroll = Element.prototype.scrollIntoView;
+        const query = window.matchMedia;
+        const modes = [];
+        Element.prototype.scrollIntoView = (options) => modes.push(options.behavior);
+        try {
+            window.matchMedia = (text) => text === '(prefers-reduced-motion: reduce)' ? { matches: false } : query(text);
+            setPrefs({ motion: 'reduced' });
+            await jumpToEntry(id);
+            window.matchMedia = (text) => text === '(prefers-reduced-motion: reduce)' ? { matches: true } : query(text);
+            setPrefs({ motion: 'full' });
+            await jumpToEntry(id);
+        } finally {
+            Element.prototype.scrollIntoView = scroll;
+            window.matchMedia = query;
+            setPrefs({ motion: 'auto' });
+        }
+        return JSON.stringify(modes);
+    `);
+
+    assert.deepEqual(modes, ["auto", "smooth"]);
+});
 
 /** Wait until the sheet stops moving: it rises as it opens, and a click mid-rise misses. */
 const settled = () =>
@@ -357,15 +414,21 @@ const settled = () =>
 test("any text size from 10 to 32 px can be typed, and stays", real, async () => {
     await page.evaluate(`localStorage.clear()`);
     await open();
-    await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+    await sheet("appearance");
     await see(
         `return JSON.stringify(document.querySelector(".text-size-field input") !== null)`,
         "the size field",
     );
+    assert.equal(
+        await inPage<boolean>(
+            `return JSON.stringify(document.querySelector('[role="group"][aria-label="Text size"]')?.contains(document.querySelector('.text-size-field input')))`,
+        ),
+        true,
+    );
     await page.scroll({ selector: ".text-size-field input" });
     await settled();
     await page.type({ selector: ".text-size-field input" }, "27.5", { submit: true });
-    await page.evaluate(`(await import("/store.js")).closeSheet()`);
+    await sheet(null);
     await open();
 
     const size = await inPage<string>(
@@ -373,7 +436,7 @@ test("any text size from 10 to 32 px can be typed, and stays", real, async () =>
     );
 
     assert.equal(size, "27.5px");
-    await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+    await sheet("appearance");
     await see(
         `return JSON.stringify(document.querySelector(".text-size-field input") !== null)`,
         "the size field",

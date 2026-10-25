@@ -268,7 +268,7 @@ function TextSize({ size }) {
         setPrefs({ text: textSizeOf(value) });
     };
 
-    return html`<div class="text-size">
+    return html`<div class="text-size" role="group" aria-label="Text size">
         <div class="segmented">
             ${[13, 15, 17, 20].map(
                 (each) => html`<button
@@ -381,14 +381,22 @@ function FontTools() {
             ${
                 look.builtIn
                     ? html`<strong>${set.ligatures ? "On" : "Off"}</strong>`
-                    : html`<${Switch}
-                          on=${set.ligatures}
-                          label="Ligatures"
-                          onChange=${() => save({ ligatures: !set.ligatures })}
-                      />`
+                    : html`<div>
+                          <${Switch}
+                              on=${set.ligatures}
+                              label="Ligatures"
+                              onChange=${() => save({ ligatures: !set.ligatures })}
+                          />
+                          <button
+                              class="button small ghost"
+                              onClick=${() => save({ ligatures: null })}
+                          >
+                              Theme's own
+                          </button>
+                      </div>`
             }
         </div>
-        <div class="font-preview" aria-label="Font preview">
+        <div class="font-preview" role="group" aria-label="Font preview">
             The quick brown fox jumps over the lazy dog. <em>Emphasis.</em>
             <code>const ok = (x) => x !== 42; <span class="hl-com">// a comment</span></code>
         </div>

@@ -73,6 +73,8 @@ user: "1000:1000"
 
 Then set `HOME` to a writable folder (`HOME: /home/node` works when the uid is `1000`, the image's `node` user) and make `./data` writable by it. Leave `--no-sandbox` in `PI_POCKET_BROWSER_ARGS` in that case too, unless you have added the kernel's user-namespace permissions the Chromium sandbox needs.
 
+The service sets `no-new-privileges`: no process in the container can gain privileges through setuid programs or file capabilities. Chromium runs with `--no-sandbox` in the container, so this, and not running as root, are what limit a page that breaks out of the browser.
+
 On an SELinux host, add `:Z` to bind mounts, or run `chcon` on the folders yourself.
 
 ## Updating

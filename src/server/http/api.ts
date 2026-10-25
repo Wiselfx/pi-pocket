@@ -518,11 +518,18 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "approvals" && second !== undefined && method === "POST") {
-            const body = await readJson<{ allow?: boolean }>(request);
+            const body = await readJson<{ allow?: boolean; values?: unknown }>(request);
 
             // An id may hold a slash, which the path decoded into a part of its own: a codemode script's calls are
-            // named `<call>/<n>`.
-            if (!(await app.answerApproval(parts.slice(1).join("/"), body.allow === true, user))) {
+            // named `<call>/<n>`. `values` answer an ask's fields (`host.ask`), and go to the asker alone.
+            if (
+                !(await app.answerApproval(
+                    parts.slice(1).join("/"),
+                    body.allow === true,
+                    user,
+                    body.values,
+                ))
+            ) {
                 throw new HttpError(404, "That approval is no longer pending");
             }
 
@@ -593,6 +600,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 defaultModel?: unknown;
                 pipCompactAt?: unknown;
                 subagentModels?: unknown;
+                limitWaitHours?: unknown;
             }>(request);
 
             // One at a time: a second that fails must not leave the first changed.
@@ -602,6 +610,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                     body.defaultModel,
                     body.pipCompactAt,
                     body.subagentModels,
+                    body.limitWaitHours,
                 ].filter((value) => value !== undefined).length > 1
             ) {
                 throw new HttpError(400, "Change one setting at a time.");
@@ -614,6 +623,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             if (body.pipCompactAt !== undefined) {
                 await app.setPipCompactAt(user, body.pipCompactAt);
+            }
+
+            // How long a run waits for a provider's limit to clear: the owner's (checked in `app.ts`).
+            if (body.limitWaitHours !== undefined) {
+                await app.setLimitWaitHours(user, body.limitWaitHours);
             }
 
             if (body.approvalRule !== undefined) {
@@ -647,6 +661,23 @@ export function createApi(options: HttpOptions, auth: Auth) {
             await app.setupGuardModel(user);
 
             return json(response, 200, await app.extensions(user));
+        }
+
+        // A module's settings (`web.settings`): the owner sets them; whoever its browser module is for reads them.
+        if (first === "extension-settings" && second !== undefined && third === undefined) {
+            if (method === "GET") {
+                return json(response, 200, app.extensionSettings(user, second));
+            }
+
+            if (method === "PUT") {
+                requireOwner(user);
+
+                return json(
+                    response,
+                    200,
+                    app.setExtensionSettings(user, second, await readJson(request)),
+                );
+            }
         }
 
         if (first === "extensions" && second === undefined && method === "GET") {

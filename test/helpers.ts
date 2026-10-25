@@ -9,6 +9,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi
 import { type ConversationId, UsageDoc } from "@earendil-works/pi-durable";
 import type { Attachment } from "../src/server/commands.ts";
 import type { User } from "../src/server/config.ts";
+import type { LimitTuning } from "../src/server/limit-gate.ts";
 import type { Client } from "../src/server/room.ts";
 
 export const context = BACKGROUND_CONTEXT;
@@ -72,6 +73,7 @@ export function openApp(
     model: ReturnType<typeof scriptedModel>,
     dataDir = join(root, "data"),
     now?: () => number,
+    limits?: Partial<LimitTuning>,
 ): Promise<App> {
     return PocketApp.open({
         dataDir,
@@ -81,6 +83,7 @@ export function openApp(
         configureModels: (models) => models.registerNativeProvider(model.provider),
         home,
         ...(now === undefined ? {} : { now }),
+        ...(limits === undefined ? {} : { limits }),
     });
 }
 
@@ -180,32 +183,13 @@ export function fakeTab(id: ConversationId | undefined, user: User, protocol = 2
     return { client, events, last, field };
 }
 
-/**
- * Remove the temporary folder: call from `after`, once the app is closed. Chromium's helper processes can still be
- * letting go of the profile after the parent exits, adding a file while the folder is taken: retry until they stop.
- */
-export async function cleanUp(): Promise<void> {
-    const until = Date.now() + 20_000;
-
-    for (;;) {
-        try {
-            rmSync(root, { recursive: true, force: true, maxRetries: 1 });
-
-            return;
-        } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-
-            if (
-                !["ENOTEMPTY", "EBUSY", "EPERM"].includes(code ?? "") ||
-                Date.now() > until
-            ) {
-                throw error;
-            }
-
-            const { promise, resolve } = Promise.withResolvers<void>();
-
-            setTimeout(resolve, 100);
-            await promise;
-        }
+/** Remove the temporary folder: call from `after`, once the app is closed. */
+export function cleanUp(): void {
+    // A browser's helper processes can still write to its profile here for a moment after it closes: retry, and a
+    // folder that stays only warns, so a slow exit does not fail the file.
+    try {
+        rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) {
+        console.warn(`Could not remove ${root}: ${(error as Error).message}`);
     }
 }

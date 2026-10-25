@@ -26,6 +26,7 @@ All the numbers that limit a module, in one place. Each group links to the guide
 [Using the host](../host.md)
 
 - **`host.text.quoted`:** cuts the line to 120 characters when you give no `max`.
+- **`host.fetchPublic`:** by default, 5 redirects, a body of 10 MiB after it is decoded, and 30 s for the whole request. `maxRedirects` can be 20 at most. `maxBytes` can be any size from 0. `timeoutMs` can be from 1 ms to 2,147,483,647 ms.
 
 ## Linked sessions
 
@@ -56,6 +57,29 @@ All the numbers that limit a module, in one place. Each group links to the guide
 - **Text of a status item:** past 40 characters, `text` and `short` are cut to 39 characters and "…".
 - **Swipe back on a page:** on touch screens up to 699 px wide.
 
+## The session list and message boxes
+
+[Browser modules](../browser-modules.md#the-session-list), [The pocket reference](pocket.md)
+
+- **Keys of one `composerKey`:** a list of 8 at most.
+- **`ComposerBox.set`:** a text of 1,000,000 characters at most. A longer one throws.
+- **Chips under one row:** 6 at most for each module.
+- **A chip's `label`:** past 32 characters, it is cut to 31 characters and "…".
+- **Words of one session for `sessionSearch`:** 32 at most, of 100 characters each at most.
+- **Filters:** 3 show in the search field, and only those 3 filter the list.
+- **A session action's `label`:** past 24 characters, it is cut to 23 characters and "…".
+- **`pocket.messages`:** a page of 1 to 200 messages, 50 by default. Others throw.
+- **A message's `text`:** 1,000 characters at most. `clipped` tells when it was cut.
+
+## Artifacts
+
+[Artifacts](../../features.md)
+
+- **Saved state of an artifact (`pocket-state-set`):** 16 KB of JSON at most for one value. A schema is 1 to 64 letters, digits, and `. _ : -`.
+- **Saves:** 20 in 10 s for one person and one artifact. Past that, the save fails.
+- **Saved values of a session:** 300 at most, for all its artifacts and people together.
+- **Shares of a session:** 100 at most at once. A share lasts 1 day, 7 days, or 30 days, or until it is ended (`hours` left out).
+
 ## Tool calls
 
 [How tool calls show](../tool-calls.md)
@@ -71,6 +95,39 @@ All the numbers that limit a module, in one place. Each group links to the guide
 - **The data of one event:** 256 KB of JSON at most.
 - **Events that a version of a module sends:** 100 each second at most, and 1 MB of them. The rest of that second's events are dropped.
 - **A tab that falls behind:** Pi Pocket cuts it off when it is more than 8 MB behind and takes nothing for 30 s. It also cuts off a tab that is more than 128 MB behind. The tab then connects again, with no old events.
+
+## Events, services, and settings
+
+[Events, services, and settings](../services-settings.md)
+
+- **Settings of one module:** 30 at most. A name is up to 40 characters, a label up to 80, a description up to 300, and a text value up to 4096. A choice setting has 1 to 50 choices.
+- **Services:** one for each module.
+- **Events:** each listener gets each event once, after the change is stored; nothing is kept for a listener added later.
+
+## Asking people and hidden values
+
+[People's values and the browser](../people-values.md)
+
+- **An ask's card:** a title of 120 characters, words of 2000, up to 6 fields, and a button of 30 characters. A field's name is up to 40 characters, its label up to 80.
+- **A value typed on a card:** 1 to 4096 characters.
+- **A hidden value:** 4 to 4096 characters, and 2000 values hidden at once in all.
+- **What streams late:** command output holds back up to the longest hidden value's length less one character, until the command ends.
+- **Variables for one command:** 256 KB in all; a name is up to 128 characters. A provider has 5 seconds for one command; past that, it adds nothing.
+- **A snapshot's controls as data:** 500 at most; a select's options, 50.
+
+## Public links
+
+[Public pages](../public-pages.md)
+
+- **How long a link stays open:** more than 0 hours, and 720 hours (30 days) at most.
+- **Uses of one link:** 1 to 1000, or any number until it closes.
+- **Open links of one module:** 200 at most. Links that closed do not count.
+- **A link's `data`:** 4 KB of JSON at most.
+- **A posted form:** 64 KB and 50 fields at most. Its body must arrive in 15 s.
+- **Forms read at the same time:** 16 in all, and 2 to one link. More get "Busy: try again in a moment".
+- **A page that a handler answers with:** 1 MB at most.
+- **Page handlers running at the same time:** 32 in all, and 4 for one link. More get "Busy". A handler has 30 s: after that, its reads and writes are refused, and the page says it could not be shown.
+- **A link that took its last use:** kept 10 minutes, so that a page that refuses the post can give the use back. It answers nothing meanwhile.
 
 ## Commands
 

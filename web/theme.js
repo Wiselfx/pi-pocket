@@ -213,7 +213,7 @@ function morph(change) {
         await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    run.finished.finally(() => mine === morphs && root.classList.remove("layout-vt"));
+    settleTransition(run, () => mine === morphs && root.classList.remove("layout-vt"));
 
     return true;
 }
@@ -245,7 +245,18 @@ export const themeDefault = () => store.state.server?.themeDefault ?? null;
 
 // ─── Pinned sessions (this browser) ──────────────────────────────────────────────
 
-export const isPinned = (id) => store.state.pinned.includes(id);
+/** The pinned ids as a set, made again only when the list changes: rows ask for each session as they draw. */
+let pinnedSet = { list: null, set: new Set() };
+
+export function isPinned(id) {
+    const list = store.state.pinned;
+
+    if (pinnedSet.list !== list) {
+        pinnedSet = { list, set: new Set(list) };
+    }
+
+    return pinnedSet.set.has(id);
+}
 
 export function togglePin(id) {
     const pinned = isPinned(id)
@@ -671,7 +682,14 @@ function transition(change, at) {
         await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    run.finished.finally(() => mine === transitions && root.classList.remove("theme-vt"));
+    settleTransition(run, () => mine === transitions && root.classList.remove("theme-vt"));
+}
+
+/** A rapid change can skip a transition: handle each promise, and clean up even when it was skipped. */
+function settleTransition(run, clean) {
+    run.ready.catch(() => {});
+    run.updateCallbackDone.catch(() => {});
+    run.finished.then(clean, clean);
 }
 
 /** Switch theme, with the reveal starting from where the person clicked. */

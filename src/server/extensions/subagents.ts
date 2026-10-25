@@ -9,8 +9,8 @@
  * request IDs keep a restarted task from delivering a message or a report twice.
  *
  * Models are a person's to choose: with no list of models for subagents (`subagentModels`), a subagent runs on its
- * session's model. With a list, a subagent runs only on a model on it: its session's model when that is listed, else
- * the first listed, and Pi may name only a listed one. Thinking is never harder than the session's. A subagent its
+ * session's model. With a list, a subagent runs only on a model on it: its session's model when that is listed and Pi
+ * names none, else the one Pi names, which must be listed and is required when the session's is not. Thinking is never harder than the session's. A subagent its
  * model or provider failed is reported as such, and Pi is told to stop and tell the user, never to try another model.
  */
 import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -38,6 +38,7 @@ import { type PendingReport, REPORT_PREFIX, SubagentsDoc } from "../docs.ts";
 import { describe } from "../errors.ts";
 import type { PocketHost } from "../host.ts";
 import { levelAtMost, sameModel, THINKING_LEVELS } from "../models.ts";
+import { modelLine } from "../model-facts.ts";
 import { requestFor } from "../requests.ts";
 import { whyUnanswered } from "../subagent-runs.ts";
 
@@ -687,17 +688,7 @@ async function problemOf(host: PocketHost, ref: ModelRef, fresh: boolean) {
     return typeof host.modelProblem === "function" ? host.modelProblem(ref, fresh) : undefined;
 }
 
-/**
- * The model a subagent runs on when Pi names none: this session's own while the owner's list is empty or has it, else
- * the first on the list. Undefined: this session's own, as it is.
- */
-function defaultSpec(allowed: readonly string[], own: ModelRef | undefined): string | undefined {
-    return allowed.length === 0 || (own !== undefined && allowed.includes(keyOf(own)))
-        ? undefined
-        : allowed[0];
-}
-
-/** The guide, and the models the owner allows, each that cannot be used now saying why. */
+/** The models a spawn may name, each on a line with the facts that help choose, then the rule of choice. */
 async function guide(host: PocketHost, own: ModelRef | undefined): Promise<string> {
     const allowed = allowedModels(host);
 
@@ -705,39 +696,46 @@ async function guide(host: PocketHost, own: ModelRef | undefined): Promise<strin
         return `${GUIDE}\nSubagents run on your model. Models are the user's to choose: never pick one on your own. ${FAILED}`;
     }
 
-    const listed = await Promise.all(
+    const lines = await Promise.all(
         allowed.map(async (spec) => {
             const ref = refOf(spec);
             const problem = ref === undefined ? undefined : await problemOf(host, ref, false);
+            const info = typeof host.modelInfo === "function" ? host.modelInfo(spec) : undefined;
 
-            return problem === undefined ? spec : `${spec} (not now: ${problem})`;
+            return modelLine(spec, info, own !== undefined && keyOf(own) === spec, problem);
         }),
     );
-    const fallback = defaultSpec(allowed, own);
     const left =
-        fallback === undefined
-            ? "your model, which is on the list"
-            : `${fallback}, the first on the list, because your model is not on it`;
+        own !== undefined && allowed.includes(keyOf(own))
+            ? "Left out, it is your model."
+            : "Your model is not on the list, so model is required.";
 
-    return `${GUIDE}\nSubagents run only on the models the user allows for them, passed as model: ${listed.join(", ")}. Left out, model is ${left}. Name another listed one only when the work needs it, never one off the list: models are the user's to choose, so never pick one on your own. ${FAILED}`;
+    return `${GUIDE}\nSubagents run only on these models, which the user allows; pass one as model:\n${lines.join("\n")}\nMatch the model to the work: a fast, cheap one for mechanical work (search, a test run, a summary), a strong one for review, design, or hard reasoning. ${left} Never name one off the list: models are the user's to list. ${FAILED}`;
 }
+
+/** The refusal of a model off the owner's list: the fix is the asker's, a listed model that suits the work. */
+const notListed = (model: string, allowed: readonly string[]) =>
+    `${model} is not one of the models the user allows for subagents (${allowed.join(", ")}). Choose one of those that suits the work; never one off the list.`;
 
 /**
  * The model a subagent may run on: undefined for this session's own, else a model on the owner's list whose sign-in
  * works now. With no list, only this session's own. With a list, only a model on it: this session's own when it is
- * there, and else the first listed when Pi names none. Anything else is refused with a message that tells Pi to go to the
- * user, never to pick another model.
+ * there and Pi names none, else the one Pi names, which it must, as choosing from the list is its job. A model off the
+ * list is refused, and so is a listed one that cannot be used now, with word to go to the user.
  */
 async function chosenModel(
     host: PocketHost,
-    asked: unknown,
+    given: unknown,
     own: ModelRef | undefined,
 ): Promise<ModelRef | undefined> {
     const allowed = allowedModels(host);
 
-    if (asked !== undefined && typeof asked !== "string") {
+    if (given !== undefined && typeof given !== "string") {
         throw new Error(NO_CHOICE);
     }
+
+    // A blank name is none.
+    const asked = given?.trim() || undefined;
 
     if (allowed.length === 0) {
         if (asked === undefined || sameModel(asked, own)) {
@@ -747,20 +745,30 @@ async function chosenModel(
         throw new Error(NO_CHOICE);
     }
 
-    const fallback = defaultSpec(allowed, own);
-    const wanted = asked ?? fallback;
+    const ownListed = own !== undefined && allowed.includes(keyOf(own));
+
+    if (asked === undefined) {
+        if (ownListed) {
+            return undefined;
+        }
+
+        throw new Error(
+            `model is required: this session's model is not on the user's list for subagents. Choose one that suits the work: ${allowed.join(", ")}.`,
+        );
+    }
 
     // This session's own model, when it is on the list: left as it is.
-    if (
-        wanted === undefined ||
-        (own !== undefined && sameModel(wanted, own) && allowed.includes(keyOf(own)))
-    ) {
+    if (ownListed && sameModel(asked, own)) {
         return undefined;
     }
 
     let ref: ModelRef;
-    const named = refOf(wanted.trim());
-    const instead = fallback === undefined ? "your model" : fallback;
+    const named = refOf(asked);
+
+    // A full name off the list is refused as such, before its sign-in or its being known is asked.
+    if (named !== undefined && !allowed.includes(keyOf(named))) {
+        throw new Error(notListed(keyOf(named), allowed));
+    }
 
     // Its sign-in asked afresh first, so a mark that is out of date neither refuses it nor lets it through.
     if (named !== undefined && allowed.includes(keyOf(named))) {
@@ -768,17 +776,15 @@ async function chosenModel(
     }
 
     try {
-        ref = host.resolveModel(wanted);
+        ref = host.resolveModel(asked);
     } catch (error) {
         throw new Error(
-            `${describe(error)} Do not pick another model: ${wanted === fallback ? "stop and tell the user" : `leave model out to use ${instead}, or stop and tell the user`}.`,
+            `${describe(error)} Stop and tell the user; do not use another model instead.`,
         );
     }
 
     if (!allowed.includes(keyOf(ref))) {
-        throw new Error(
-            `${keyOf(ref)} is not one of the models the user allows for subagents (${allowed.join(", ")}). Do not pick another model on your own: leave model out to use ${instead}, or stop and ask the user.`,
-        );
+        throw new Error(notListed(keyOf(ref), allowed));
     }
 
     const problem = await problemOf(host, ref, named === undefined);
@@ -837,7 +843,7 @@ export default function createSubagents(host: PocketHost) {
         model: Type.Optional(
             Type.String({
                 description:
-                    "spawn only: provider/modelId, one on the user's list. Left out: yours if listed, else the first listed.",
+                    "spawn only: provider/modelId, one on the user's list. Left out: yours; required when yours is not listed.",
             }),
         ),
     });
@@ -849,7 +855,7 @@ export default function createSubagents(host: PocketHost) {
         description:
             "Hand work to background subagents. Actions: spawn (name, message; optional " +
             (choosing
-                ? "model, only one on the user's list (left out: yours if listed, else the first listed), "
+                ? "model, only one on the user's list (left out: yours; you must name one if yours is not listed), "
                 : "") +
             "thinking, tools" +
             (choosing ? "" : "; it runs on your model") +
@@ -880,7 +886,8 @@ export default function createSubagents(host: PocketHost) {
             };
 
             if (action === "status") {
-                const names = name === undefined ? Object.keys(registry.agents) : [name];
+                const names =
+                    name === undefined || name === "all" ? Object.keys(registry.agents) : [name];
                 const lines: string[] = [];
 
                 for (const each of names) {

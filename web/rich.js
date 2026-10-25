@@ -105,13 +105,21 @@ export function HtmlPreview({ source, title = "Preview" }) {
             range.getBoundingClientRect().bottom,
             ...[...body.children].map((each) => each.getBoundingClientRect().bottom),
         );
-        const content =
-            bottom +
-            shown.documentElement.scrollTop +
+        const fills = body.getBoundingClientRect().height >= frame.clientHeight - 1;
+        const tail =
             parseFloat(style.paddingBottom) +
             parseFloat(style.borderBottomWidth) +
             parseFloat(style.marginBottom);
-        const fills = body.getBoundingClientRect().height >= frame.clientHeight - 1;
+        // The body's own height counts too, unless it is only as tall as its frame: the line box under an inline image
+        // or SVG reaches a few pixels below the last box.
+        const content = Math.max(
+            bottom + shown.documentElement.scrollTop + tail,
+            fills
+                ? 0
+                : body.getBoundingClientRect().bottom +
+                      shown.documentElement.scrollTop +
+                      parseFloat(style.marginBottom),
+        );
 
         fitHeight(content + (frame.offsetHeight - frame.clientHeight), fills);
     };

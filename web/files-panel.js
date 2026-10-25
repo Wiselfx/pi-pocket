@@ -431,7 +431,9 @@ function FilesTab({ changes, covering }) {
         const at = rows.indexOf(document.activeElement);
         const row = rows[at];
 
+        // Alt with an arrow stays the app's: Alt+↑/↓ switches sessions.
         if (
+            event.altKey ||
             !["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
         ) {
             return;
@@ -556,7 +558,7 @@ function FilesTab({ changes, covering }) {
                         if (event.key === "Escape" && query !== "") {
                             event.stopPropagation();
                             setQuery("");
-                        } else if (event.key === "ArrowDown") {
+                        } else if (event.key === "ArrowDown" && !event.altKey) {
                             event.preventDefault();
                             ref.current?.querySelector(".ft-tree .ft-row[data-path]")?.focus();
                         }

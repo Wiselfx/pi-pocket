@@ -122,11 +122,19 @@ const queuedReports = (item) => item.reports ?? null;
 const SEND_MODES = [
     ["steer", "Steer", "Pi reads it now, between steps"],
     ["followUp", "Queue", "Pi reads it when this run ends"],
-    ["interrupt", "Interrupt", "Stops the run right now (also its tool call), then sends it"],
+    [
+        "interrupt",
+        "Interrupt",
+        "Stops the run right now (also its tool call) and clears the queue, then sends it",
+    ],
 ];
 
 /** What a send mode does, for a queued message's buttons. */
 const modeHint = (mode) => SEND_MODES.find(([value]) => value === mode)[2];
+
+/** What Interrupt does to a message waiting in the queue: the others there stay, unlike the composer's Interrupt. */
+const QUEUED_INTERRUPT_HINT =
+    "Stops the run right now (also its tool call), then sends this one. The other queued messages stay queued";
 
 /**
  * Whether a queued message's Interrupt asks first: the first tap reads "Interrupt?", a second within 4 s sends it.
@@ -423,8 +431,9 @@ export function Composer() {
     const dock = useRef(null);
     const picker = useRef(null);
     const list = useRef(null);
-    // One per `!` command: sending it again after a lost reply runs it once.
-    const requestId = useRef(uid());
+    // One per `!` command: sending it again after a lost reply runs it once. Made when the first is sent, not on each
+    // draw of the message box.
+    const requestId = useRef(null);
     // An extension's command while its send is unresolved: sending the same text again finds the first run.
     const commandRequest = useRef(null);
     const busy = view.live.busy;
@@ -709,7 +718,7 @@ export function Composer() {
 
         setSending(true);
         const started = await attempt(() =>
-            actions.shell(command, !full.startsWith("!!"), requestId.current),
+            actions.shell(command, !full.startsWith("!!"), (requestId.current ??= uid())),
         );
 
         setSending(false);
@@ -724,7 +733,7 @@ export function Composer() {
                 { taskId: started.taskId, command, conversationId, at: Date.now() },
             ],
         }));
-        requestId.current = uid();
+        requestId.current = null;
         sent(full);
     };
 
@@ -1173,8 +1182,8 @@ export function Composer() {
                                         class=${`button small ${interrupting === item.id ? "danger" : ""}`}
                                         title=${
                                             interrupting === item.id
-                                                ? "Tap again to stop the run and send this now"
-                                                : modeHint("interrupt")
+                                                ? "Tap again to stop the run and send this now. The other queued messages stay queued"
+                                                : QUEUED_INTERRUPT_HINT
                                         }
                                         onClick=${() => {
                                             if (CONFIRM_INTERRUPT && interrupting !== item.id) {

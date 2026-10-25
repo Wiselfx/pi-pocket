@@ -26,5 +26,5 @@ export async function publicArtifact(
         throw new HttpError(404, "No such page");
     }
 
-    await artifactResponse(response, published.found, query);
+    await artifactResponse(response, published.found, query, false);
 }

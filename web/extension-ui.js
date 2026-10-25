@@ -33,7 +33,7 @@ import {
     panelsBeside,
     store,
 } from "./store.js";
-import { fromExtensions, SLOTS } from "./slots.js";
+import { fromExtensions, SLOTS, slotsChanged } from "./slots.js";
 import { setCallSummary } from "./turns.js";
 import {
     html,
@@ -77,6 +77,8 @@ const KINDS = [
 ];
 /** What a rail button, menu row, launcher action, or status item can open: one of the module's own. */
 const OPENS = ["page", "sheet", "panel"];
+/** The event core sends a module's tabs when the owner changes its settings (`app.setExtensionSettings`). */
+const SETTINGS_EVENT = "pocket:settings";
 /** The most text `pocket.insertText` puts into the message box at once. */
 const INSERT_MAX = 100_000;
 /** The most of a message's text `pocket.messages` gives, and the most messages in a page. */
@@ -232,8 +234,13 @@ function chargeOpen(record) {
 /** Whether a redraw is due at the next frame, for every change made until then. */
 let due = false;
 
-/** Draw what extensions add again at the next frame: every change until then goes in the same redraw. */
+/**
+ * Draw what extensions add again at the next frame: every change until then goes in the same redraw. The slots' orders
+ * (`slots.js`) are worked out again at once, for a draw that comes before then.
+ */
 function redraw() {
+    slotsChanged();
+
     if (due) {
         return;
     }
@@ -552,6 +559,7 @@ function teardown(record) {
     }
 
     record.arrangements.clear();
+    slotsChanged();
 
     if (record.calls.size > 0) {
         record.calls.clear();
@@ -682,6 +690,10 @@ function check(kind, spec) {
         !(Array.isArray(spec.keywords) && spec.keywords.every((each) => typeof each === "string"))
     ) {
         throw new Error(`${name} ${spec.id}: keywords are a list of words`);
+    }
+
+    if (kind === "menu" && spec.group !== undefined && !["app", "session"].includes(spec.group)) {
+        throw new Error(`${name} ${spec.id}: group is "app" or "session"`);
     }
 
     if (spec.before !== undefined && spec.after !== undefined) {
@@ -1059,6 +1071,31 @@ function pocketFor(record) {
             tick(record);
 
             return (async () => api(routeOf(record.module, path), body, options))();
+        },
+        /**
+         * The module's settings (`web.settings` on the server) as the person in this tab may read them: `{ fields,
+         * values, set }`, with a secret's value left out (only whether it is `set`).
+         */
+        settings: () => {
+            tick(record);
+
+            return (async () => api(`extension-settings/${encodeURIComponent(record.module)}`))();
+        },
+        /** Hear when the owner changes the module's settings; returns how to stop. */
+        onSettings(run) {
+            tick(record);
+
+            if (typeof run !== "function") {
+                throw new Error("pocket.onSettings: give it a function");
+            }
+
+            const listener = { event: SETTINGS_EVENT, run: () => run() };
+
+            if (live()) {
+                record.listeners.add(listener);
+            }
+
+            return () => record.listeners.delete(listener);
         },
         /** Hear an event the module sends (`web.send` on the server); returns how to stop. */
         on(event, run) {
@@ -1773,20 +1810,22 @@ export function ExtensionRailButtons() {
 const closeOf = (spec) => (spec.page !== undefined ? closePage() : closeExtPanel());
 
 /** The menu's rows that extensions added: `{ key, label, hint, run }`, run closing the menu first. */
-export function extensionMenuItems() {
-    return added("menu").map(({ record, spec }) => ({
-        key: `${record.module}:${spec.id}`,
-        label: spec.label,
-        hint: spec.hint ?? "",
-        run: () => {
-            // A page or panel shows under the menu, which closes; a sheet takes the menu's place.
-            if (spec.sheet === undefined) {
-                closeSheet();
-            }
+export function extensionMenuItems(group = "app") {
+    return added("menu")
+        .filter(({ spec }) => (spec.group ?? "app") === group)
+        .map(({ record, spec }) => ({
+            key: `${record.module}:${spec.id}`,
+            label: spec.label,
+            hint: spec.hint ?? "",
+            run: () => {
+                // A page or panel shows under the menu, which closes; a sheet takes the menu's place.
+                if (spec.sheet === undefined) {
+                    closeSheet();
+                }
 
-            activate(record, spec);
-        },
-    }));
+                activate(record, spec);
+            },
+        }));
 }
 
 /** The launcher's actions that extensions added, as launcher items. */
@@ -1836,13 +1875,22 @@ function sessionInfo(session) {
  * Call a function a module gave the session list, as the list draws. One that throws stops its module, after this draw:
  * the list draws without it.
  */
-function drawCall(record, run, session, fallback) {
+function drawCall(record, run, session, fallback, name) {
     if (!liveRecord(record)) {
         return fallback;
     }
 
     try {
-        return run(sessionInfo(session));
+        const value = run(sessionInfo(session));
+
+        if (value && typeof value.then === "function") {
+            // These readers run during rendering. Consume a rejected promise too, before stopping the module.
+            Promise.resolve(value).catch(() => {});
+
+            throw new Error(`${name} must return its value directly, not a promise`);
+        }
+
+        return value;
     } catch (error) {
         queueMicrotask(() => liveRecord(record) && fail(record, error, "failed"));
 
@@ -1862,7 +1910,7 @@ function cutText(text, max) {
 /** The chips that extensions put on a session's row: `{ key, label, title, run }`, `run` only for one that does something. */
 export function sessionChips(session) {
     return added("sessionChips").flatMap(({ record, spec }) => {
-        const chips = drawCall(record, spec.chips, session, []);
+        const chips = drawCall(record, spec.chips, session, [], "sessionChips.chips");
 
         if (!Array.isArray(chips)) {
             return [];
@@ -1883,10 +1931,20 @@ export function sessionChips(session) {
     });
 }
 
+/** Words stay valid until the server replaces the session or an extension changes what it adds. */
+const cachedWords = new WeakMap();
+
 /** The words that extensions give a session for the session list's search and the launcher's, lowercased. */
 export function sessionWords(session) {
-    return added("sessionSearch").flatMap(({ record, spec }) => {
-        const words = drawCall(record, spec.words, session, []);
+    const revision = store.state.extensionsRev;
+    const cached = cachedWords.get(session);
+
+    if (cached?.revision === revision) {
+        return cached.words;
+    }
+
+    const words = added("sessionSearch").flatMap(({ record, spec }) => {
+        const words = drawCall(record, spec.words, session, [], "sessionSearch.words");
 
         return Array.isArray(words)
             ? words
@@ -1895,6 +1953,10 @@ export function sessionWords(session) {
                   .map((word) => word.trim().slice(0, WORD_TEXT).toLowerCase())
             : [];
     });
+
+    cachedWords.set(session, { revision, words });
+
+    return words;
 }
 
 /** The actions extensions offer on sessions: `run(ids)` does the action on those sessions. */
@@ -1958,7 +2020,10 @@ export function sessionFilterTest() {
     }
 
     return (session) =>
-        on.every(({ record, spec }) => drawCall(record, spec.match, session, true) === true);
+        on.every(
+            ({ record, spec }) =>
+                drawCall(record, spec.match, session, true, "sessionFilter.match") === true,
+        );
 }
 
 /** The longest a status item's text shows, in characters as a reader sees them: past it, cut with "…". */
