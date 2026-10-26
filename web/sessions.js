@@ -48,6 +48,7 @@ import {
     timeAgo,
     useMinute,
     usePresence,
+    useScrollMore,
     useSide,
     useSlide,
 } from "./ui.js";
@@ -533,6 +534,15 @@ function SessionRow({
                         title=${subagentsTip(counts)}
                     >
                         <${Icon} name="fork" size=${10} />${live > 0 ? live : failed}
+                    </span>`
+                }
+                ${
+                    session.background > 0 &&
+                    html`<span
+                        class="session-background"
+                        title=${`${session.background} ${session.background === 1 ? "command runs" : "commands run"} in the background`}
+                    >
+                        <${Icon} name="terminal" size=${10} />${session.background}
                     </span>`
                 }
                 ${!fork && person && html`<${Avatar} person=${person} size=${18} />`}
@@ -1608,8 +1618,14 @@ function RailTiles() {
     // The tiles are as tall as each other: the open session's place in the order says where its marker goes.
     const at = order.findIndex((session) => session.id === conversationId);
     const indicator = useSlide(items, ".ws.active", "y", at);
+    const more = useScrollMore();
+    // One ref for both: the marker's slide reads the element, and the fades follow its scrolling.
+    const [ref] = useState(() => (element) => {
+        items.current = element;
+        more(element);
+    });
 
-    return html`<div class="rail-items" ref=${items}>
+    return html`<div class="rail-items" ref=${ref} style=${`--tiles:${order.length}`}>
         <${Slide} box=${indicator} />
         ${order.map(
             (session, index) => html`<button
@@ -1617,7 +1633,7 @@ function RailTiles() {
                 class=${`ws ${session.id === conversationId ? "active" : ""} ${session.busy ? "busy" : ""} ${session.waiting ? "waiting" : ""}`}
                 style=${`--i:${index}`}
                 title=${`${session.title ?? "New session"}${index < 9 ? ` (Alt+${index + 1})` : ""}`}
-                aria-label=${`${session.title ?? "New session"}${session.waiting ? ", needs you" : session.busy ? ", working" : ""}`}
+                aria-label=${`${session.title ?? "New session"}${session.waiting ? ", needs you" : session.busy ? ", working" : session.background > 0 ? ", running commands in the background" : ""}`}
                 aria-current=${session.id === conversationId ? "page" : undefined}
                 onClick=${() => navigate(session.id)}
             >
@@ -1643,7 +1659,8 @@ function Rail({ foldable = false, folded = false }) {
     // Counted again only when the session list changes, not on each draw of the rail.
     const { busy, agents } = useMemo(
         () => ({
-            busy: sessions.filter((session) => session.busy).length,
+            // Commands Pi runs in the background are at work too, after its answer ended.
+            busy: sessions.filter((session) => session.busy || session.background > 0).length,
             agents: subagentTotals(sessions),
         }),
         [sessions],
@@ -1653,8 +1670,10 @@ function Rail({ foldable = false, folded = false }) {
     const keys = APPLE ? "⌘B" : "Ctrl+B";
     const fold = () => setPrefs({ sidebar: folded ? "open" : "rail" });
     const role = me?.role === "owner" ? "owner" : me?.role === "viewer" ? "view only" : "guest";
+    // A rail with more buttons than room scrolls as a whole, and fades the edge where more is.
+    const more = useScrollMore();
 
-    return html`<nav class="rail" data-part="rail" aria-label="Sessions and tools">
+    return html`<nav class="rail" data-part="rail" aria-label="Sessions and tools" ref=${more}>
         ${
             foldable
                 ? html`<button
