@@ -9,7 +9,8 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { arr, bool, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Message } from "@earendil-works/pi-ai";
 import {
     defineExtension,
@@ -30,9 +31,10 @@ import {
 } from "../docs.ts";
 import { APP_ROOT } from "../config.ts";
 import type { PocketHost } from "../host.ts";
+import { localFolder } from "../design/files.ts";
 import { loadDesignSystem } from "../design/tokens.ts";
 import { assetName, assetType } from "../http/artifact-assets.ts";
-import { expandHome } from "../paths.ts";
+import { expandHome, workspaceScheme } from "../paths.ts";
 
 export const MAX_BYTES = 2_000_000;
 export const MAX_ASSET_BYTES = 5_000_000;
@@ -209,19 +211,18 @@ function applyEdits(
 }
 
 /** The bullet about `inline`, for sessions whose tool has it. */
-const INLINE_GUIDE = `- inline: true shows the page as a card in your reply, for a small interactive piece the person uses right there (a calculator, a chart, a form); without it the person opens the artifact, for a whole page, a game, Markdown, or SVG. Its result says which version it made: after an update, say what changed and do not repeat the page. Only a call you make directly shows a card, not one inside codemode. An id used with inline stays HTML: use a new id for Markdown or SVG. Write its page for a narrow column with no fixed height: the card grows up to 900 px, then scrolls.
+const INLINE_GUIDE = `- inline: true shows the page as a card in your reply, for a small piece the person uses right there (a calculator, a chart, a form). Write it for a narrow column with no fixed height: the card grows up to 900 px, then scrolls. Without inline, the person opens it: for a whole page, a game, Markdown, or SVG. Only a call you make directly shows a card, not one inside codemode. An inline id stays HTML: use a new id for Markdown or SVG. Its result says which version it made: after an update, say what changed and do not repeat the page.
 `;
 
 export const BRIDGE_GUIDE = join(APP_ROOT, "src", "server", "guides", "artifact-bridge.md");
 
-const guide = (
-    inline: boolean,
-) => `Use the artifact tool for results the user should see rendered rather than read as text: interactive demos, games, visualizations, charts, diagrams, formatted reports. Not for plain answers or project files (write those with write).
-- HTML artifacts open in a sandboxed frame on the user's device (often a phone) and cannot reach this app, its cookies, or the parent page. Make them self-contained, responsive (a viewport meta tag), and touch-friendly, with visible loading and error states (window.onerror).
-- Load libraries from a CDN with full URLs (https://esm.sh, https://cdn.jsdelivr.net). For ES modules that import bare specifiers (three.js addons import "three"), add an import map.
-- For a page that puts a message in the person's message box ("Ask Pi about this") or keeps its state across reloads and devices, read ${BRIDGE_GUIDE} first.
-- For small fixes, send edits instead of the whole content.
-${inline ? INLINE_GUIDE : ""}- To publish an existing local file without repeating it, give path. Everyone who can see the conversation can open the copy.`;
+const guide = (inline: boolean) =>
+    `Use the artifact tool for results to see rendered, not read: demos, games, charts, diagrams, reports; not for plain answers or project files.
+- HTML runs in a sandboxed frame on the user's device (often a phone), with no access to this app, its cookies, or the parent page. Make it self-contained, responsive (a viewport meta tag), and touch-friendly, with loading and error states (window.onerror).
+- Load libraries from a CDN by full URL (https://esm.sh, https://cdn.jsdelivr.net); bare specifiers need an import map.
+- For a page that puts a message in the person's message box or keeps its state across reloads and devices, read ${BRIDGE_GUIDE} first.
+- Send edits for small fixes. Give path to publish a local file without repeating it; everyone in the conversation can open the copy.
+${inline ? INLINE_GUIDE : ""}`.trimEnd();
 
 type Exec = ToolRegistration["execute"];
 
@@ -314,6 +315,11 @@ async function publish(
 
             type = inferred;
             const agent = await api.agent(context);
+
+            if (workspaceScheme(agent.cwd ?? "") !== undefined) {
+                throw new Error("A remote session's files are not on this machine: give content.");
+            }
+
             const path = resolve(agent.cwd ?? process.cwd(), expandHome(args.path));
 
             content = await readArtifact(path);
@@ -383,6 +389,13 @@ async function publish(
                 }
 
                 const agent = await api.agent(context);
+
+                if (workspaceScheme(agent.cwd ?? "") !== undefined) {
+                    throw new Error(
+                        "A remote session's files are not on this machine: give content.",
+                    );
+                }
+
                 const path = resolve(agent.cwd ?? process.cwd(), expandHome(entry.path));
 
                 bytes = await readFileBytes(path, MAX_ASSET_BYTES);
@@ -418,7 +431,7 @@ async function publish(
             let cwd: string | undefined;
 
             try {
-                cwd = (await api.agent(context)).cwd;
+                cwd = localFolder((await api.agent(context)).cwd);
             } catch {
                 // No session folder to look in: the page keeps its link.
             }
@@ -560,39 +573,32 @@ async function publish(
 }
 
 const bundleParameters = {
-    assets: Type.Optional(
-        Type.Array(
-            Type.Object({
-                name: Type.String({
-                    description:
-                        "Relative path in the bundle, up to 200 characters, with no . or .. segment.",
-                }),
-                path: Type.Optional(
-                    Type.String({ description: "A local file to copy (binary allowed)." }),
-                ),
-                content: Type.Optional(
-                    Type.String({ description: "UTF-8 text, instead of path." }),
-                ),
-            }),
+    assets: opt(
+        arr(
+            obj(
+                {
+                    name: str({
+                        description:
+                            "Relative path in the bundle, up to 200 characters, with no . or .. segment.",
+                    }),
+                    path: opt(str({ description: "A local file, binary too." })),
+                    content: opt(str({ description: "UTF-8 text, instead of path." })),
+                },
+                { open: true },
+            ),
             {
                 description:
-                    "Files the page loads by relative URL (images, fonts, data, scripts, pages), added or replaced by name; earlier ones stay. Up to 5 MB each, 20 MB per version.",
+                    "Files the page loads by relative URL, added or replaced by name; earlier ones stay. Up to 5 MB each, 20 MB per version.",
             },
         ),
     ),
-    removeAssets: Type.Optional(
-        Type.Array(Type.String(), { description: "Bundle paths to drop." }),
-    ),
-    group: Type.Optional(
-        Type.String({ description: "Group variations under one kebab-case slug." }),
-    ),
-    kind: Type.Optional(
-        StringEnum(["page", "deck"] as const, { description: "page or deck (a slide deck)." }),
-    ),
-    id: Type.String({ description: "Stable kebab-case id; reuse it for a new version." }),
-    title: Type.String({ description: "Short title." }),
-    edits: Type.Optional(
-        Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }), {
+    removeAssets: opt(arr(str(), { description: "Bundle paths to drop." })),
+    group: opt(str({ description: "Group variations under one kebab-case slug." })),
+    kind: opt(StringEnum(["page", "deck"] as const, { description: "deck: a slide deck." })),
+    id: str({ description: "Stable kebab-case id; reuse it for a new version." }),
+    title: str({ description: "Short title." }),
+    edits: opt(
+        arr(obj({ oldText: str(), newText: str() }, { open: true }), {
             description: "Exact, unique replacements on the latest version.",
         }),
     ),
@@ -640,18 +646,25 @@ const LEGACY_INLINE = "artifact_inline";
 
 /** What the artifact tool says it does where no reply draws a card. */
 const VIEWER_ONLY =
-    "Publish an HTML page, Markdown document, or SVG image that the user opens in the app's artifact viewer. The same id publishes a new version. Give exactly one of content, edits, or path (up to 2,000,000 bytes).";
+    "Publish an HTML page, Markdown, or SVG to the artifact viewer. The same id makes a new version. Give exactly one of content, edits, or path (up to 2 MB).";
 
 /** The artifact tool without `inline`, for a session whose panel draws no cards (PiP's). */
 export function withoutInline(tool: ToolRegistration): ToolRegistration {
-    const { inline: _inline, ...properties } = (
-        tool.parameters as unknown as { properties: Record<string, unknown> }
-    ).properties;
+    const schema = tool.parameters as unknown as {
+        properties: Record<string, unknown>;
+        required?: readonly string[];
+    };
+    const { inline: _inline, ...properties } = schema.properties;
 
+    // The same schema without `inline`: obj() would make every property required, as `properties` has lost opt().
     return {
         ...tool,
         description: VIEWER_ONLY,
-        parameters: Type.Object(properties as never),
+        parameters: {
+            ...schema,
+            properties,
+            required: (schema.required ?? []).filter((name) => name !== "inline"),
+        } as never,
         execute: (args, api, context) =>
             tool.execute({ ...(args as object), inline: undefined } as never, api, context),
     } as ToolRegistration;
@@ -661,29 +674,27 @@ export default function createArtifacts(_host: PocketHost) {
     const artifact = defineTool({
         name: "artifact",
         description:
-            "Publish an HTML page, Markdown document, or SVG image that the user opens in the app's artifact viewer, or (inline: true, HTML only) show a page as a card in your reply. The same id publishes a new version. Give exactly one of content, edits, or path (up to 2,000,000 bytes); inline takes content or edits.",
-        parameters: Type.Object({
-            inline: Type.Optional(
-                Type.Boolean({
-                    description:
-                        "Show the HTML page as a card in your reply, where the person uses it right there.",
-                }),
-            ),
-            ...bundleParameters,
-            type: Type.Optional(
-                StringEnum(["html", "markdown", "svg"] as const, {
-                    description:
-                        "Default: html, or from a new path's extension. A path cannot change an existing type.",
-                }),
-            ),
-            content: Type.Optional(Type.String({ description: "The whole new version." })),
-            path: Type.Optional(
-                Type.String({
-                    description:
-                        "A local UTF-8 file to copy as this version (a snapshot, not a live link, without the files beside it): absolute, ~/…, or relative to the session folder.",
-                }),
-            ),
-        }),
+            "Publish an HTML page, Markdown, or SVG to the artifact viewer, or (inline: true, HTML only) as a card in your reply. The same id makes a new version. Give exactly one of content, edits, or path (up to 2 MB); inline takes content or edits.",
+        parameters: obj(
+            {
+                inline: opt(bool()),
+                ...bundleParameters,
+                type: opt(
+                    StringEnum(["html", "markdown", "svg"] as const, {
+                        description:
+                            "Default: html, or a new path's extension. A path cannot change an existing type.",
+                    }),
+                ),
+                content: opt(str({ description: "The whole new version." })),
+                path: opt(
+                    str({
+                        description:
+                            "A local UTF-8 file to copy (a snapshot, without the files beside it): absolute, ~/…, or relative to the session folder.",
+                    }),
+                ),
+            },
+            { open: true },
+        ),
         // The commit in publish() is idempotent per call, so a rerun after a crash is harmless.
         replay: "safe",
         execute: (args, api, context) => publish(args, api, context, args.inline === true),

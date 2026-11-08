@@ -18,6 +18,8 @@ import { browserAvailable, setBrowserOpen } from "./browser.js";
 import { describeCall, describersRevision } from "./calls.js";
 import { DiffBlock } from "./diff.js";
 import { LinkedSessions } from "./linked-sessions.js";
+import { markdownRevision } from "./markdown-ext.js";
+import { personStorage } from "./person-storage.js";
 import { splitQuote } from "./quote-text.js";
 import { fromServer } from "./seen.js";
 import { defineItem, slotItems, slotKey } from "./slots.js";
@@ -36,6 +38,7 @@ import {
     openSheet,
     store,
     TRANSCRIPT_ROWS,
+    viewSynced,
 } from "./store.js";
 import { openSubagent, stateOf } from "./subagents.js";
 import { motionLevel, prefs } from "./theme.js";
@@ -55,11 +58,11 @@ import {
     withoutNotes,
 } from "./turns.js";
 import {
+    attachedPictureSrc,
     Boot,
     clockTime,
     copyText,
     entryImageUrl,
-    fileUrl,
     html,
     Icon,
     Markdown,
@@ -145,8 +148,8 @@ const SKILL = /^<skill name="([^"]+)" location="([^"]+)">\n[\s\S]*?\n<\/skill>(?
 /** An @mention of a file or folder in a message, as the message box writes it. */
 const MENTION = /(^|[\s([{])@(?:"([^"\n]+)"|([^\s"]+))/g;
 
-/** One line of the attachment list the server adds to a message: `- path (name, mime, size bytes)`. */
-const ATTACHED = /^- (.*) \(([^,]*), ([^,]*), (\d+) bytes\)$/;
+/** One line of the attachment list the server adds: `- path (name, mime, size bytes)`, then an optional note. */
+const ATTACHED = /^- (.*) \(([^,]*), ([^,]*), (\d+) bytes\)( \[Image: .*)?$/;
 
 function parseAttachments(block) {
     return block
@@ -156,7 +159,13 @@ function parseAttachments(block) {
             const match = ATTACHED.exec(line);
 
             return match
-                ? { path: match[1], name: match[2], mime: match[3] }
+                ? {
+                      path: match[1],
+                      name: match[2],
+                      mime: match[3],
+                      size: Number(match[4]),
+                      noted: match[5] !== undefined,
+                  }
                 : { name: line.replace(/^- /, ""), mime: "" };
         });
 }
@@ -179,8 +188,12 @@ function EntryImages({ entryId, count, label }) {
  */
 function MessageExtras({ entry, attachments }) {
     const files = attachments ? parseAttachments(attachments) : [];
-    const pictures = files.filter((file) => file.path && file.mime.startsWith("image/"));
-    const others = files.filter((file) => !pictures.includes(file));
+    const pictures = files.flatMap((file) => {
+        const src = attachedPictureSrc(file, files, entry);
+
+        return src === null ? [] : [{ file, src }];
+    });
+    const others = files.filter((file) => !pictures.some((picture) => picture.file === file));
 
     return html`
         ${
@@ -201,7 +214,7 @@ function MessageExtras({ entry, attachments }) {
         ${
             pictures.length > 0 &&
             html`<div class="thumbs">
-                ${pictures.map((file) => html`<${Thumb} src=${fileUrl(file.path)} alt=${file.name} />`)}
+                ${pictures.map(({ file, src }) => html`<${Thumb} src=${src} alt=${file.name} />`)}
             </div>`
         }
         ${
@@ -574,6 +587,99 @@ function PresentedText({ entry, text }) {
     `;
 }
 
+/** How the app marks a linked session's message (`linked-sessions.ts`): the sender's address in this session. */
+const LINKED_VIA = /^linked session (\S+)$/;
+
+/** A linked session's message folds past this many lines, or this many characters. */
+const LINKED_FOLD_LINES = 10;
+const LINKED_FOLD_CHARS = 900;
+
+/**
+ * A message from a linked session: an agent, not a person, in a card of its own. Its head names the session and opens
+ * it when this person may (`linkedPeers`, by address); its text shows as Markdown, as Pi's replies do, and a long one
+ * folds to its first lines. Tapping the card opens its message sheet, as a person's message does.
+ */
+function LinkedMessage({ entry, view, address, text, attachments, fresh }) {
+    const [open, setOpen] = useState(false);
+    const id = view.linkedPeers?.[address];
+    const session =
+        id === undefined ? undefined : store.state.sessions.find((each) => each.id === id);
+    const name = session ? (session.title ?? "New session") : undefined;
+    const lines = text.split("\n").length;
+    const folds = lines > LINKED_FOLD_LINES || text.length > LINKED_FOLD_CHARS;
+
+    return html`<div
+        class=${`user-row ${fresh ? "enter" : ""}`}
+        data-part="prompt-row"
+        data-entry-kind=${entry.presentation?.entryKind}
+        id=${`entry-${entry.id}`}
+    >
+        <div
+            class=${`prompt linked-message tappable ${folds ? "folds" : ""} ${open ? "open" : ""}`}
+            data-part="prompt"
+            data-from="linked"
+            title="Edit, send again, or copy"
+            tabindex="0"
+            onClick=${(event) => openMessage(event, entry.id)}
+            onKeyDown=${(event) => {
+                if (
+                    (event.key === "Enter" || event.key === " ") &&
+                    event.target === event.currentTarget
+                ) {
+                    event.preventDefault();
+                    openMessage(event, entry.id);
+                }
+            }}
+        >
+            <div class="linked-head" data-part="linked-head">
+                <span class="linked-mark" data-part="linked-mark" aria-hidden="true">
+                    <${Icon} name="fork" size=${16} />
+                </span>
+                <span class="linked-who">
+                    <span class="linked-kicker">
+                        <span class="linked-tag">Linked session</span>
+                        ${entry.at && html`<span>· ${clock(entry.at)}</span>`}
+                    </span>
+                    <span
+                        class=${`linked-name ${name ? "" : "unknown"}`}
+                        data-part="linked-name"
+                    >
+                        ${name ?? "A session you cannot open"}
+                    </span>
+                </span>
+                ${
+                    session &&
+                    html`<button
+                        class="linked-open"
+                        data-part="linked-open"
+                        aria-label=${`Open ${name}`}
+                        onClick=${() => navigate(session.id)}
+                    >
+                        Open
+                        <${Icon} path="M5 12h14M13 6l6 6-6 6" size=${14} />
+                    </button>`
+                }
+            </div>
+            <div class="linked-body" data-part="linked-body" id=${`linked-body-${entry.id}`}>
+                <${Markdown} text=${text} />
+                <${MessageExtras} entry=${entry} attachments=${attachments} />
+            </div>
+            ${
+                folds &&
+                html`<button
+                    class="linked-more"
+                    data-part="linked-more"
+                    aria-expanded=${open ? "true" : "false"}
+                    aria-controls=${`linked-body-${entry.id}`}
+                    onClick=${() => setOpen(!open)}
+                >
+                    ${open ? "Show less" : `Show all · ${lines} lines`}
+                </button>`
+            }
+        </div>
+    </div>`;
+}
+
 /** A person's message, including one a module presents when this browser shows it open. */
 function UserMessage({ entry, view, users }) {
     const [fresh] = useState(() => settledFor !== null && settledFor === view.conversation?.id);
@@ -654,10 +760,22 @@ function UserMessage({ entry, view, users }) {
     // A linked session's message: shown by its label and its fence alone, so the words before the fence (which tell Pi
     // how to read it) can change without changing how older messages show.
     const peerText =
-        via && /^linked session \S+$/.test(via[1])
+        via && LINKED_VIA.test(via[1])
             ? /\n<linked-session-message>\n([\s\S]*)\n<\/linked-session-message>$/.exec(sent)?.[1]
             : undefined;
-    const body = peerText ?? (scheduled ? sent.slice(SCHEDULED.length) : sent);
+
+    if (peerText !== undefined) {
+        return html`<${LinkedMessage}
+            entry=${entry}
+            view=${view}
+            address=${LINKED_VIA.exec(via[1])[1]}
+            text=${peerText}
+            attachments=${attachments}
+            fresh=${fresh}
+        />`;
+    }
+
+    const body = scheduled ? sent.slice(SCHEDULED.length) : sent;
     // `/skill:name request`: the skill by name, and the request.
     const skill = SKILL.exec(body);
     const name = author ?? (scheduled ? "Pi" : undefined);
@@ -672,16 +790,10 @@ function UserMessage({ entry, view, users }) {
 
     const picture = avatarSrc({ id: authorId });
 
-    // Who it is from, for themes: you, someone else, a linked session, or no one the app knows (Pi's schedule, the main
-    // agent, a watch or a webhook).
+    // Who it is from, for themes: you, someone else, or no one the app knows (Pi's schedule, the main agent, a watch or a
+    // webhook). A linked session's message is `linked` (`LinkedMessage`).
     const from =
-        peerText !== undefined
-            ? "linked"
-            : authorId === undefined
-              ? "other"
-              : authorId === store.state.me?.id
-                ? "me"
-                : "person";
+        authorId === undefined ? "other" : authorId === store.state.me?.id ? "me" : "person";
 
     return html`<div
         class=${`user-row ${fresh ? "enter" : ""}`}
@@ -724,7 +836,7 @@ function UserMessage({ entry, view, users }) {
                 }
                 ${entry.at && html`<span class="prompt-time">${clock(entry.at)}</span>`}
                 ${scheduled && html`<span class="prompt-time">· scheduled</span>`}
-                ${via && html`<span class="prompt-time">· via ${peerText === undefined ? via[1] : "a linked session"}</span>`}
+                ${via && html`<span class="prompt-time">· via ${via[1]}</span>`}
             </span>
             <div class="prompt-body" data-part="prompt-text">
                 ${
@@ -1880,21 +1992,121 @@ function choiceValue(field, { picked, other }) {
         .join("\n");
 }
 
+// Unsent answers belong to this approval, and to the person who may answer it. Another approval, or a
+// form that changed, starts empty rather than showing answers that no longer fit. They are kept by
+// session, each under its approval's id and its call (or the time it asked, with no call): an id is
+// unique only while it waits, so a later ask with the same id is another, but its call asking again,
+// as after a restart, is the same ask.
+const askKey = (conversationId) => `ask.${conversationId}`;
+const askEntry = (approval) => `${approval.id}@${approval.callId ?? approval.createdAt}`;
+
+/**
+ * The approvals waiting in `conversationId` as the server last sent them, or undefined while the tab shows a view it
+ * kept, or another session: a kept view may be old, and list asks that ended or miss one asked meanwhile.
+ */
+const waitingIn = (conversationId) =>
+    viewSynced(conversationId) ? (store.state.view.approvals ?? []) : undefined;
+
+/**
+ * The unsent answers kept for the session of `approval`, with `change` made to its own (`undefined` leaves it, `null`
+ * drops it). With the session's approvals as the server sent them, what belongs to an approval no longer waiting goes,
+ * also one that ended while another session showed; with none, nothing else goes.
+ */
+function keptAsks(approval, change) {
+    let all = {};
+
+    try {
+        const saved = JSON.parse(personStorage.get(askKey(approval.conversationId)) ?? "null");
+
+        all = typeof saved === "object" && saved !== null && !Array.isArray(saved) ? saved : {};
+    } catch {
+        all = {};
+    }
+
+    const waiting = waitingIn(approval.conversationId);
+    const live = waiting && new Set(waiting.map(askEntry));
+    const kept = Object.fromEntries(
+        Object.entries(all).filter(([entry]) => live === undefined || live.has(entry)),
+    );
+
+    if (change === null) {
+        delete kept[askEntry(approval)];
+    } else if (change !== undefined) {
+        kept[askEntry(approval)] = change;
+    }
+
+    if (JSON.stringify(kept) !== JSON.stringify(all)) {
+        const empty = Object.keys(kept).length === 0;
+
+        personStorage.set(askKey(approval.conversationId), empty ? null : JSON.stringify(kept));
+    }
+
+    return kept;
+}
+
+function emptyAsk(field) {
+    return field.choices ? { picked: [], other: "" } : "";
+}
+
+function keptAsk(form, saved) {
+    if (typeof saved !== "object" || saved === null || Array.isArray(saved)) {
+        return null;
+    }
+
+    const values = {};
+
+    for (const field of form.fields) {
+        const value = saved[field.name];
+
+        if (field.choices) {
+            const picked = Array.isArray(value?.picked) ? value.picked : null;
+            const other = typeof value?.other === "string" ? value.other : null;
+            const labels = new Set(field.choices.map((choice) => choice.label));
+
+            if (
+                picked === null ||
+                other === null ||
+                picked.some((label) => typeof label !== "string" || !labels.has(label)) ||
+                (!field.multiple && picked.length > 1) ||
+                (!field.other && other !== "")
+            ) {
+                return null;
+            }
+
+            values[field.name] = { picked, other };
+        } else if (typeof value === "string") {
+            values[field.name] = value;
+        } else {
+            return null;
+        }
+    }
+
+    return values;
+}
+
+function savedAsk(form, approval) {
+    return keptAsk(form, keptAsks(approval)[askEntry(approval)] ?? null) ?? null;
+}
+
 /** Sent only by that person, and declined by anyone who can steer. Only the `ask` tool passes what is typed on to Pi. */
 function AskCard({ approval }) {
     const { me, users } = store.state;
     const form = approval.form;
-    const [values, setValues] = useState(() =>
-        Object.fromEntries(
-            form.fields.map((field) => [
-                field.name,
-                field.choices ? { picked: [], other: "" } : "",
-            ]),
-        ),
-    );
-    const [busy, setBusy] = useState(false);
     const owner = users?.find?.((each) => each.role === "owner")?.id;
     const mine = (approval.requestedBy ?? owner) === me?.id;
+    const [values, setValues] = useState(() => {
+        const saved = mine ? savedAsk(form, approval) : null;
+
+        // One that does not fit goes, or it would come back if the form fit it again.
+        if (mine && saved === null) {
+            keptAsks(approval, null);
+        }
+
+        return (
+            saved ?? Object.fromEntries(form.fields.map((field) => [field.name, emptyAsk(field)]))
+        );
+    });
+    const [busy, setBusy] = useState(false);
     const who =
         users?.find?.((each) => each.id === approval.requestedBy)?.name ??
         "the person Pi works for";
@@ -1908,11 +2120,51 @@ function AskCard({ approval }) {
     // Only a card of plain fields hides what is typed from Pi: the `ask` tool's answers are for Pi.
     const plain = form.fields.some((field) => !field.choices);
 
+    const change = (next) => {
+        setValues(next);
+
+        // A secret is typed again after a switch or a reload: it never goes to the browser's storage.
+        if (mine) {
+            const kept = form.fields.map((field) => [
+                field.name,
+                field.secret ? "" : next[field.name],
+            ]);
+
+            keptAsks(approval, Object.fromEntries(kept));
+        }
+    };
+
+    // As the server's view of its session comes (also after one this tab kept), asks that ended there go.
+    const synced = viewSynced(approval.conversationId);
+
+    useEffect(() => {
+        if (mine && synced) {
+            keptAsks(approval);
+        }
+    }, [mine, synced]);
+    // The card is shown only while its approval waits. It leaving the server's view of its session (answered elsewhere,
+    // cancelled, or the run stopped) drops what was typed. A switch to another session keeps it.
+    useEffect(
+        () => () => {
+            const waiting = waitingIn(approval.conversationId);
+
+            if (
+                mine &&
+                waiting !== undefined &&
+                !waiting.some((each) => askEntry(each) === askEntry(approval))
+            ) {
+                keptAsks(approval, null);
+            }
+        },
+        [approval.id, mine],
+    );
+
     const answer = (allow) => {
         setBusy(true);
-        attempt(() => actions.approve(approval.id, allow, allow ? typed : undefined)).finally(() =>
-            setBusy(false),
-        );
+        attempt(() => actions.approve(approval.id, allow, allow ? typed : undefined))
+            // `attempt` gives undefined when the server turned the answer down: what was typed stays, to try again.
+            .then((done) => done !== undefined && keptAsks(approval, null))
+            .finally(() => setBusy(false));
     };
 
     return html`<form
@@ -1942,7 +2194,7 @@ function AskCard({ approval }) {
                                 field=${field}
                                 chosen=${values[field.name]}
                                 busy=${busy}
-                                onChange=${(chosen) => setValues({ ...values, [field.name]: chosen })}
+                                onChange=${(chosen) => change({ ...values, [field.name]: chosen })}
                             />`
                           : html`<label class="ask-field" key=${field.name}>
                                 <span>${field.label}</span>
@@ -1956,7 +2208,7 @@ function AskCard({ approval }) {
                                     spellcheck="false"
                                     disabled=${busy}
                                     onInput=${(event) =>
-                                        setValues({
+                                        change({
                                             ...values,
                                             [field.name]: event.currentTarget.value,
                                         })}
@@ -2013,7 +2265,8 @@ function decided(decision) {
 
 function ApprovalCard({ approval }) {
     if (approval.form) {
-        return html`<${AskCard} approval=${approval} />`;
+        // One card for each ask: a later one with the same id starts anew.
+        return html`<${AskCard} key=${askEntry(approval)} approval=${approval} />`;
     }
 
     const { me, server } = store.state;
@@ -2553,13 +2806,31 @@ function agentsKey(view) {
  */
 function rowDeps(entry) {
     const { view, users, me, server } = store.state;
-    const deps = [entry, users, me, server, view.conversation?.id, view.conversation?.kind];
+    const deps = [
+        entry,
+        users,
+        me,
+        server,
+        view.conversation?.id,
+        view.conversation?.kind,
+        markdownRevision(),
+    ];
 
     if (entry.kind === "user") {
         deps.push(view.authors?.[entry.id]);
 
         if (entry.text.startsWith("[subagent ")) {
             deps.push(agentsKey(view));
+        }
+
+        // A linked session's message names its session: it shows again when the session's name or access changes.
+        const address = /^\[via linked session (\S+)\] /.exec(entry.text)?.[1];
+
+        if (address !== undefined) {
+            const id = view.linkedPeers?.[address];
+            const session = store.state.sessions.find((each) => each.id === id);
+
+            deps.push(id, session === undefined ? undefined : (session.title ?? ""));
         }
     }
 
@@ -2619,6 +2890,7 @@ function replyDeps(item, actions) {
         view.conversation?.id,
         reactions === undefined ? "" : JSON.stringify(reactions),
         (view.pins ?? []).some((pin) => pin.entryId === entry.id),
+        markdownRevision(),
         // The actions under it: the app's and extensions', as arranged (`slots.js`).
         actions,
     ];
@@ -3128,6 +3400,16 @@ function LiveLine({ live, approvals, start, entries, conversationId }) {
                         }
                     })}
             >Retry now</button>`
+        }
+        ${
+            limit &&
+            !waiting &&
+            canSteer() &&
+            html`<button
+                class="live-retry live-stop"
+                data-part="live-stop"
+                onClick=${() => attempt(actions.abort)}
+            >Stop</button>`
         }
         ${
             retry &&

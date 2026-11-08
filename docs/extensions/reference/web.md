@@ -251,6 +251,7 @@ Answers the requests of a route. The value that it returns goes back as JSON, an
 
 ```ts
 interface WebRequest {
+    createSession(request: { cwd: string; title?: string }): Promise<{ id: number }>;
     readonly method: WebMethod;
     readonly params: Readonly<Record<string, string>>;
     readonly query: URLSearchParams;
@@ -278,6 +279,7 @@ What a handler gets.
 - Document operations recheck the current person. Retaining a request, its context, or a callback does not extend its lifetime: commits after disconnect or handler return are refused, and an unfinished callback rolls back. Await all writes before returning. These APIs are for module documents, not core's internal documents or a way to start model work.
 - An unbound catalog save has no source plan, turn, or spend checks. A bound commit also requires the source's current steering and turn rights.
 - Since 0.20.0 (experimental), `sessions()` gives the sessions that the person who asked can see now, as their session list shows them, archived ones too. See [`WebSession`](#websession). Use it to check the ids that a browser sends, and to keep data about sessions from people who cannot see them. Each call reads the list again.
+- Since 0.28.0 (experimental), `createSession` starts an ordinary session on owner-only routes. It refuses anyone but the owner. See [Execution environments for workspaces](../workspaces.md).
 
 ### `WebSession`
 
@@ -422,7 +424,7 @@ Since 0.16.0 · Stable
 ### `HumanLinkedSession`
 
 ```ts
-interface HumanLinkedSession extends LinkedSession {
+interface HumanLinkedSession extends Omit<LinkedSession, "failed"> {
     conversationId: ConversationId;
 }
 ```
@@ -643,7 +645,7 @@ Who can use a route, or whose tabs load a browser module.
 - `"steer"`: the owner, and guests who can steer all sessions.
 - `"view"`: the owner, guests, and viewers who can see all sessions.
 
-A person invited to one session never can, because these parts belong to the whole app. Each route has its own `access`, so a browser module for everyone can call a route for the owner alone.
+A person invited to one session never can, because these parts belong to the whole app. The one exception is the built-in Diagrams browser module, which draws Mermaid and math in their replies. They get its browser module and no routes. Each route has its own `access`, so a browser module for everyone can call a route for the owner alone.
 
 `access` is the same for all methods. A POST route with `"view"` lets viewers change something through it, though they cannot steer a session. Give `"owner"` or `"steer"` to a route that changes things.
 

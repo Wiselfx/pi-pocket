@@ -371,6 +371,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        if (first === "hooks" && second !== undefined && third === undefined && method === "POST") {
+            const body = await readJson<{ instructions?: unknown }>(request);
+
+            return json(response, 200, await app.hooks.update(user, second, body.instructions));
+        }
+
         // A new secret, for a hook whose address or secret got out.
         if (first === "hooks" && second !== undefined && third === "rotate" && method === "POST") {
             return json(response, 200, await app.hooks.rotate(user, second));
@@ -647,8 +653,21 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const path = app.workspace.checkDirectory(requested);
             const showHidden = url.searchParams.get("hidden") === "1";
             const dirs: { name: string; path: string }[] = [];
+            let entries;
 
-            for (const entry of readdirSync(path, { withFileTypes: true })) {
+            try {
+                entries = readdirSync(path, { withFileTypes: true });
+            } catch (error) {
+                const code = (error as NodeJS.ErrnoException).code;
+
+                if (code === "EACCES" || code === "EPERM") {
+                    throw new HttpError(403, `Pi Pocket cannot read ${path}.`);
+                }
+
+                throw error;
+            }
+
+            for (const entry of entries) {
                 if (!showHidden && entry.name.startsWith(".")) {
                     continue;
                 }
@@ -669,10 +688,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
-            const recent = [...new Set(app.sessions(user).map((session) => session.cwd))].slice(
-                0,
-                8,
-            );
+            // A workspace URI is not a folder the picker can open: its provider's module starts sessions there.
+            const local = app
+                .sessions(user)
+                .map((session) => session.cwd)
+                .filter((cwd) => app.workspaceScheme(cwd) === undefined);
+            const recent = [...new Set(local)].slice(0, 8);
 
             return json(response, 200, {
                 path,
@@ -823,6 +844,36 @@ export function createApi(options: HttpOptions, auth: Auth) {
             requireOwner(user);
 
             return json(response, 200, await app.providers.modelRefresh.refresh());
+        }
+
+        // OpenAI-compatible endpoints, in Pi's models.json: the owner's alone, as they hold keys and decide models.
+        if (first === "custom-providers") {
+            requireOwner(user);
+            const providers = app.customProviders;
+
+            if (second === undefined && method === "GET") {
+                return json(response, 200, providers.list());
+            }
+
+            if (second === undefined && method === "POST") {
+                return json(response, 200, await providers.create(await readJson(request)));
+            }
+
+            if (second === "discover" && third === undefined && method === "POST") {
+                return json(response, 200, {
+                    models: await providers.discover(await readJson(request)),
+                });
+            }
+
+            if (second !== undefined && third === undefined && method === "PUT") {
+                return json(response, 200, await providers.update(second, await readJson(request)));
+            }
+
+            if (second !== undefined && third === undefined && method === "DELETE") {
+                await providers.remove(second);
+
+                return json(response, 200, { ok: true });
+            }
         }
 
         // For the owner, each subscription's sign-in is asked afresh first (three seconds at most; a mark found later

@@ -88,7 +88,7 @@ Read them; a theme cannot change them, as they are each person's choice in Appea
 | Token                                    | What                                                                                |
 | ---------------------------------------- | ----------------------------------------------------------------------------------- |
 | `--text-size`                            | The conversation's text size, 10 to 32 px (13 to 17 before 0.20.0)                  |
-| `--sidebar-w`                            | The open sidebar's width, as dragged                                                |
+| `--sidebar-w`                            | The open sidebar's width, as dragged (set as the drag ends)                         |
 | `--transcript-width`, `--composer-width` | Only with Width set to Wide or Full: then they are inline, and win over the theme's |
 
 ## Parts
@@ -128,6 +128,7 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `home`                                                                 | The home screen on wide screens                                                                                                                                                                |
 | `home-facts`, `home-logo`, `home-title`, `home-fact`, `home-colors`    | Its summary: the block, the logo, the first line, each fact, the palette's colors (each a `home-color`)                                                                                        |
 | `home-actions`                                                         | Its buttons                                                                                                                                                                                    |
+| `home-menu`                                                            | Its menu button, top right: the menu without a session's items                                                                                                                                 |
 | `home-recent`, `home-heading`, `home-recent-row`, `home-recent-key`    | Jump back in: the list, its heading, each session, and the number that opens it                                                                                                                |
 | `home-list`                                                            | The session list as a phone's home screen                                                                                                                                                      |
 | `pane`                                                                 | The conversation's window (or the subagents board, or an extension's page)                                                                                                                     |
@@ -143,6 +144,8 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `prompt`                                        | A person's message                                                                                            |
 | `prompt-head`, `author-mark`, `prompt-author`   | Its head: who sent it and when; their initials; their name                                                    |
 | `prompt-text`                                   | What it says (its skill chip, words, and files)                                                               |
+| `linked-head`, `linked-mark`, `linked-name`     | A linked session's message (`data-from` `linked`): its head, square mark, session name (since 0.28.0)         |
+| `linked-open`, `linked-body`, `linked-more`     | Its Open button, its text as Markdown, and Show all on a long one (since 0.28.0)                              |
 | `presented-input`, `presented-head`             | An extension's input (`web.presentEntry`), folded: its card and the line that opens it (since 0.28.0)         |
 | `presented-chevron`, `presented-tag`            | That line's chevron; the input's label in its head, when shown open (since 0.28.0)                            |
 | `presented-more`                                | The button beside that line that opens its message sheet (since 0.28.0)                                       |
@@ -188,7 +191,7 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `sheet-head`, `sheet-body`           | Its title bar, and what it holds                                                                                                                  |
 | `menu`                               | The menu, on wide screens (it is the sheet `menu` on phones)                                                                                      |
 | `session-menu`                       | The right-click menu on a session row (since 0.27.0)                                                                                              |
-| `quote-reply-button`                 | The Reply button that shows over selected text (since 0.27.0)                                                                                     |
+| `quote-reply-button`                 | The pill that shows over selected text, with Reply and (with PiP on) Ask PiP (since 0.27.0)                                                       |
 | `launcher`                           | The launcher (Ctrl/⌘+K)                                                                                                                           |
 | `launcher-input`, `launcher-filters` | Its search field, and the search types under it                                                                                                   |
 | `launcher-group`, `launcher-row`     | A group's heading, and each result                                                                                                                |

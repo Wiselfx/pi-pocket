@@ -4,6 +4,7 @@ import { browserAvailable, displayUrl, setBrowserOpen } from "../browser.js";
 import { chatUnread } from "../chat.js";
 import { schedulesAvailable, triggersOn, watchAvailable, watchPr } from "../commands.js";
 import { extensionMenuItems, safeMode } from "../extension-ui.js";
+import { hostMenu } from "../embedder.js";
 import { useChanges } from "../diff.js";
 import { filesAvailable, setFilesOpen } from "../files-panel.js";
 import { peeksOn, togglePeeks } from "../peeks.js";
@@ -406,6 +407,9 @@ export function MenuSheet({ places = true }) {
     const instructions = view.agent?.instructions;
     const memory = useMemory();
 
+    // The embedder this page runs in adds its own group at the end, below App, under its own title (`embedder.js`).
+    const embedder = hostMenu();
+
     return html`<${MenuFrame} title=${conversation?.title ?? "Menu"}>
         ${places && html`<${Places} />`}
         <div class="menu-session">
@@ -578,5 +582,12 @@ export function MenuSheet({ places = true }) {
             }
             ${item(html`<span class="menu-signout">Sign out</span>`, signOut)}
         </div>
+        ${
+            embedder.items.length > 0 &&
+            html`<div class="group">
+                ${embedder.title && html`<div class="group-title">${embedder.title}</div>`}
+                ${embedder.items.map((each) => item(each.label, each.run, each.hint))}
+            </div>`
+        }
     <//>`;
 }

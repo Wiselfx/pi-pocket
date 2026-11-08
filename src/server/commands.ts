@@ -32,6 +32,7 @@ import {
     type Task,
     type TaskId,
     type TaskRuntime,
+    type Tx,
     type UserInput,
 } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
@@ -50,12 +51,14 @@ import {
 } from "./docs.ts";
 import {
     ATTACHMENTS_HEADING,
+    CONTEXT_BLOCK,
     FILE_BLOCK,
     FROM_PREFIX,
     NOTE_ENTRY,
     splitAttachments,
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
+import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
 import { mentionedPaths, viewFile } from "./files.ts";
@@ -93,7 +96,7 @@ export type Attachment = { path: string; name: string; mime: string; size: numbe
 
 // A name can hold " (", so the path is the part that ends with "-name".
 function attachedFile(line: string, uploads: string): Attachment[] {
-    const tail = /, ([^,]+), (\d+) bytes\)$/.exec(line);
+    const tail = /, ([^,]+), (\d+) bytes\)(?: \[Image: .*)?$/.exec(line);
 
     if (!line.startsWith("- ") || tail === null) {
         return [];
@@ -127,6 +130,11 @@ export interface SubmitRequest {
     requestId: string;
     /** Send the files the message mentions with `@` along with it, so Pi need not read them first. */
     inlineFiles?: boolean;
+    /**
+     * PiP only: the session a passage quoted in the message came from (Ask PiP by a selection). PiP gets which session
+     * it is, unseen by people (`CONTEXT_BLOCK`).
+     */
+    about?: { session: number };
 }
 
 /** How many `@` mentioned files go along with a message, and how much of them. */
@@ -139,6 +147,8 @@ const IMAGE_MIME: Record<string, string> = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
 };
 const MAX_TITLE = 120;
 /** A title as stored: one line, so it cannot pass for more lines where it is quoted (PiP's lists, reports). */
@@ -305,7 +315,7 @@ async function followed(
         if (watch !== undefined) {
             // A listener is never called inline, so the value it started on is this one's to look at.
             await look(watch.value);
-            watch.start(look);
+            watch.start((call) => (call.kind === "value" ? look(call.value) : looking));
         }
 
         return await Promise.race([submission.wait(context), left]);
@@ -388,7 +398,19 @@ export class Commands {
     async createSession(
         user: User,
         request: { cwd?: string; title?: string; worktree?: unknown },
-        { projectDefaults = true }: { projectDefaults?: boolean } = {},
+        {
+            projectDefaults = true,
+            model,
+            thinkingLevel,
+            init,
+        }: {
+            projectDefaults?: boolean;
+            /** A model the caller already checked: it replaces the default, in the commit that makes the session. */
+            model?: ModelRef;
+            thinkingLevel?: ModelThinkingLevel;
+            /** Runs in the commit that makes the session, after its entry is written. */
+            init?: (tx: Tx, id: ConversationId) => Promise<void>;
+        } = {},
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
@@ -400,9 +422,16 @@ export class Commands {
 
         const given = optionalText(request.title, "title");
         const title = (given === undefined ? undefined : oneLine(given)) || undefined;
-        const folder = app.workspace.checkDirectory(
-            optionalText(request.cwd, "cwd") ?? app.defaultCwd,
-        );
+        const requested = optionalText(request.cwd, "cwd") ?? app.defaultCwd;
+
+        app.requireWorkspaceOwner(user, requested);
+        const remote = app.workspaceScheme(requested) !== undefined;
+
+        if (remote && request.worktree === true) {
+            throw new HttpError(400, "Remote workspaces do not support worktrees.");
+        }
+
+        const folder = await app.resolveCwd(requested);
         const now = Date.now();
 
         return this.#inPlace(
@@ -411,16 +440,25 @@ export class Commands {
             title ?? basename(folder),
             async ({ cwd, worktree }) => {
                 // An internal caller about to apply a person's explicit model keeps its previous starting pair.
-                const initial = this.#defaultModel(undefined, projectDefaults ? cwd : undefined);
+                const initial = this.#defaultModel(
+                    undefined,
+                    projectDefaults && model === undefined && !remote ? cwd : undefined,
+                );
                 const conversation = await app.harness.createConversation(
                     {
                         ownership: { kind: "ownerless" },
                         agent: {
                             cwd,
-                            ...(initial.model === undefined ? {} : { model: initial.model }),
-                            ...(initial.thinkingLevel === undefined
-                                ? {}
-                                : { thinkingLevel: initial.thinkingLevel }),
+                            ...(model !== undefined
+                                ? { model }
+                                : initial.model === undefined
+                                  ? {}
+                                  : { model: initial.model }),
+                            ...(thinkingLevel !== undefined
+                                ? { thinkingLevel }
+                                : initial.thinkingLevel === undefined
+                                  ? {}
+                                  : { thinkingLevel: initial.thinkingLevel }),
                         },
                         init: async (tx, id) => {
                             const sessions = await tx.doc(SessionsDoc);
@@ -433,6 +471,7 @@ export class Commands {
                                 ...(title === undefined ? {} : { title }),
                                 ...(worktree === undefined ? {} : { worktree }),
                             };
+                            await init?.(tx, id);
                         },
                     },
                     context,
@@ -530,6 +569,10 @@ export class Commands {
         app.requireSee(user, id);
         await app.requireDriver(id, user);
         const worktree = app.sessionMeta(id)?.worktree;
+
+        if (app.workspaceScheme(app.cwdOf(id)) !== undefined) {
+            throw new HttpError(400, "Remote workspaces do not support worktrees.");
+        }
 
         if (worktree === undefined) {
             throw new HttpError(404, "This session has no worktree");
@@ -781,10 +824,29 @@ export class Commands {
 
         app.spend.check(user, id);
 
-        const lines = attachments.map(
-            (file) =>
-                `- ${file.path} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`,
+        // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by
+        // side, in their order.
+        const images = model.input.includes("image")
+            ? attachments.filter((file) => forModel(file.mime, file.size))
+            : [];
+        const made = await Promise.allSettled(
+            images.map((file) => modelImage(file.path, file.mime)),
         );
+        // What differs between a file and the image the model gets goes on the file's line.
+        const notes = new Map<Attachment, string>();
+
+        made.forEach((result, index) => {
+            if (result.status === "fulfilled" && result.value.note !== undefined) {
+                notes.set(images[index]!, result.value.note);
+            }
+        });
+
+        const lines = attachments.map((file) => {
+            const note = notes.get(file);
+            const line = `- ${file.path} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
+
+            return note === undefined ? line : `${line} ${note}`;
+        });
         // The heading whole, with files alone too: what reads the message splits it there.
         const written =
             lines.length === 0 ? text : `${text}${ATTACHMENTS_HEADING}${lines.join("\n")}`;
@@ -792,6 +854,7 @@ export class Commands {
             user,
             via === undefined ? written : `[via ${via}] ${written}`,
         );
+        const about = this.#aboutSession(id, user, request.about);
         const mentioned =
             request.inlineFiles === true
                 ? await this.#mentionedFiles(id, user, typed, model.input.includes("image"))
@@ -802,19 +865,12 @@ export class Commands {
             ...mentioned.map((part) =>
                 part.type === "text" ? { ...part, text: app.hidden.replace(part.text, id) } : part,
             ),
+            ...(about === undefined ? [] : [{ type: "text" as const, text: about }]),
         ];
-
-        // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by side, in their order.
-        const images = model.input.includes("image")
-            ? attachments.filter((file) => forModel(file.mime, file.size))
-            : [];
-        const made = await Promise.allSettled(
-            images.map((file) => modelImage(file.path, file.mime)),
-        );
 
         made.forEach((result, index) => {
             if (result.status === "fulfilled") {
-                parts.push(result.value);
+                parts.push(result.value.image);
             } else {
                 app.notice(
                     "warning",
@@ -882,12 +938,6 @@ export class Commands {
         const titled = app.hidden.replace(typed, id);
 
         await this.#touched(id, titled, text === titled ? undefined : text);
-
-        // A person's own words: linked sessions may message each other again (`linked-sessions.ts`).
-        if (via === undefined) {
-            await app.linkedSessions.personWrote(id);
-        }
-
         this.#reportUnanswered(id, submission.wait(context));
 
         if (failure !== undefined) {
@@ -1049,6 +1099,54 @@ export class Commands {
     }
 
     /**
+     * For a message to PiP that asks about a passage: which session it came from, for PiP alone (`CONTEXT_BLOCK`). Only
+     * a session its person may see, and never another PiP; nothing for a message to anyone else.
+     */
+    #aboutSession(
+        id: ConversationId,
+        user: User,
+        about: SubmitRequest["about"],
+    ): string | undefined {
+        const app = this.#app;
+
+        if (about === undefined) {
+            return undefined;
+        }
+
+        const session = typeof about === "object" && about !== null ? about.session : undefined;
+
+        if (app.pip.ownerOf(id) === undefined) {
+            throw new HttpError(400, "Only a message to PiP says which session it is about");
+        }
+
+        if (typeof session !== "number" || !Number.isSafeInteger(session) || session <= 0) {
+            throw new HttpError(400, "about.session must be a session's number");
+        }
+
+        const target = session as unknown as ConversationId;
+        const meta = app.sessionMeta(target);
+
+        if (meta === undefined || meta.pip !== undefined) {
+            throw new HttpError(404, "There is no such session.");
+        }
+
+        app.requireSee(user, target);
+
+        // Anyone in that session can name it: no invisible characters carry words past people to PiP.
+        const plain = (text: string, max: number) =>
+            attribute(snippet(text.replace(/\p{Cf}/gu, "").replace(/\p{Cc}/gu, " "), max));
+        const title = plain(app.hidden.replace(meta.title ?? "untitled", target), 120);
+        const folder = plain(meta.cwd, 300);
+
+        return [
+            `${CONTEXT_BLOCK} session="${session}" title="${title}" folder="${folder}">`,
+            `The quoted passage at the start of this message comes from Pi's reply in session ${session}.`,
+            "Read that session with session_read for more context when the question needs it.",
+            "</pocket-context>",
+        ].join("\n");
+    }
+
+    /**
      * The files a message mentions with `@`, for Pi: text files as `<file>` blocks, as Pi's terminal app sends files
      * given on its command line, and images as images when the model takes them. Only files this person may load
      * through the session; anything else stays a mention, which Pi can read itself.
@@ -1088,7 +1186,7 @@ export class Commands {
 
                 if (mime !== undefined) {
                     if (images && statSync(file).size <= MAX_INLINE_IMAGE) {
-                        parts.push(await modelImage(file, mime));
+                        parts.push((await modelImage(file, mime)).image);
                     }
 
                     continue;
@@ -1561,6 +1659,10 @@ export class Commands {
             );
         }
 
+        if (request.cwd !== undefined) {
+            app.requireWorkspaceOwner(user, request.cwd);
+        }
+
         const conversation = await app.conversation(id);
         const current = await app.agentState(id);
         const ref = request.model ?? current?.model;
@@ -1578,8 +1680,7 @@ export class Commands {
             current?.thinkingLevel ??
             "off") as ModelThinkingLevel;
         const thinkingLevel = model === undefined ? wanted : clampThinkingLevel(model, wanted);
-        const cwd =
-            request.cwd === undefined ? undefined : app.workspace.checkDirectory(request.cwd);
+        const cwd = request.cwd === undefined ? undefined : await app.resolveCwd(request.cwd);
 
         const change = {
             ...(request.model === undefined
@@ -2207,6 +2308,9 @@ export class Commands {
         if (app.sessionMeta(id) === undefined) {
             throw new HttpError(400, "Only sessions can be forked");
         }
+
+        // The fork works in this session's folder: a remote one is the owner's to start sessions in.
+        app.requireWorkspaceOwner(user, app.cwdOf(id));
 
         // A fork would carry PiP's tools and none of PiP: they act as PiP's person, which a fork is not.
         if (app.sessionMeta(id)?.pip !== undefined) {

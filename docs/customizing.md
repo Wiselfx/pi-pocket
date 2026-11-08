@@ -25,11 +25,14 @@ Keep the files short and true. They go with each request, and a rule that Pi can
 
 ## PiP's instructions
 
-PiP has no project, so it does not read AGENTS.md files. Write the rules for PiP, such as the language of its answers, in `pip.md` in Pi Pocket's data folder: `~/.pi-pocket/pip.md`, unless `--data` or `PI_POCKET_DIR` names another folder (since 0.28.0).
+PiP has no project, so it does not read AGENTS.md files. Write the rules for PiP in `pip.md` in Pi Pocket's data folder: `~/.pi-pocket/pip.md`, unless `--data` or `PI_POCKET_DIR` names another folder (since 0.28.0).
 
 - PiP gets the file with each message. When the file changes, the next message has the new text.
 - Only PiP reads it: sessions, subagents, and Pi's terminal app do not.
-- A session that PiP messages still answers PiP in Simplified Technical English. PiP answers you as the file says.
+
+## The language agents write in
+
+Since 0.28.0, agents write to each other in the language of the person they work for: PiP to the sessions it starts or messages, a session to its linked sessions and its subagents, and each answer back. A session you open later, that PiP or another session worked in, reads in your language, with no setting. PiP takes the language from your messages to it, and for a watch, a webhook, or a schedule from the instructions you gave it. In English they write Simplified Technical English (ASD-STE100); in another language, the same short, plain style. Their answers to you follow your own messages, as before. To choose another language for PiP's messages to sessions, say so in `pip.md`.
 
 ## Skills: procedures that Pi follows on request
 
@@ -62,7 +65,7 @@ Use a template for a message that people send often. Use a skill for steps that 
 
 ## Models and providers
 
-People sign in to providers in Menu → **Providers**, and pick a model for each session with the model chip in the message box. Pi Pocket uses Pi's sign-ins (`~/.pi/agent/auth.json`) and Pi's list of models. To add a model or a provider that Pi does not know, add it to `models.json` as Pi's `models.md` says. A provider that needs code comes as a Pi Pocket drop-in that calls `host.registerModelProvider` ([host.md](extensions/reference/host.md#registermodelprovider)), not as a Pi extension: see [Pi's extensions and packages](#pis-extensions-and-packages).
+People sign in to providers in Menu → **Providers**, and pick a model for each session with the model chip in the message box. Pi Pocket uses Pi's sign-ins (`~/.pi/agent/auth.json`) and Pi's list of models. To add an OpenAI-compatible endpoint (LM Studio, Ollama, vLLM, a proxy), the owner taps **Add** on the **OpenAI Compatible** row in Providers: a name, a base URL, an API key (or **No key**), and models picked from the endpoint's list (**Find models**) or typed by hand. Pi Pocket writes the endpoint into Pi's `models.json`, which it makes, with its folder, when missing, and keeps the key in `auth.json`. **Edit** and **Remove** change it later. A `models.json` with comments, or one Pi refuses, is left alone. To add another model or provider that Pi does not know, or the fields the form does not set (headers, compat, costs), add it to `models.json` as Pi's `models.md` says; the form keeps those fields when it edits the endpoint. A provider that needs code comes as a Pi Pocket drop-in that calls `host.registerModelProvider` ([host.md](extensions/reference/host.md#registermodelprovider)), not as a Pi extension: see [Pi's extensions and packages](#pis-extensions-and-packages).
 
 **A Claude subscription.** Sign in to Anthropic with it in Providers. Then turn on **Claude subscription billing** in Menu → Extensions → Installed → **Built in**, so that requests count against the plan. It is off by default, and it asks before it turns on. Without it, Anthropic can bill the requests as extra usage, and refuse them when that is used up.
 
@@ -77,7 +80,7 @@ People sign in to providers in Menu → **Providers**, and pick a model for each
 
 Models are the person's choice, never Pi's:
 
-- A subagent runs on its session's model, unless the owner allows models under **Models for subagents**, at the top of the Providers sheet. By default, there are none. Once some are allowed, subagents and linked sessions run only on those: on the session's model when it is one of them and Pi names none, else on a model Pi chooses from them (Pi must name one when the session's is not among them).
+- A subagent runs on its session's model, unless the owner allows models under **Subagent models** in the Providers sheet (a pane on the right on wide screens, at the top on phones). By default, there are none. Once some are allowed, subagents and linked sessions run only on those: on the session's model when it is one of them and Pi names none, else on a model Pi chooses from them (Pi must name one when the session's is not among them).
 - PiP gives a model only when its person named it.
 
 Instructions, skills, and `AGENTS.md` cannot change this. Tell the person where the setting is instead.

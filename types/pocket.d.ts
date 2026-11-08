@@ -24,6 +24,7 @@ import type {
     TaskId,
     Tx,
 } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { ComponentType, Fragment, FunctionComponent, h, VNode } from "preact";
 import type {
     useCallback,
@@ -94,6 +95,18 @@ export interface Module {
 }
 
 // ─── The host ────────────────────────────────────────────────────────────────
+
+/**
+ * An execution provider for one workspace URI scheme.
+ * @since 0.28.0
+ * @experimental
+ */
+export interface WorkspaceProvider {
+    /** @experimental @since 0.28.0 */
+    env(cwd: string): ExecutionEnv;
+    /** @experimental @since 0.28.0 */
+    resolveCwd(cwd: string, signal?: AbortSignal): Promise<string>;
+}
 
 /**
  * What the app gives a module: the first argument of its default export. The host stays the same while modules reload.
@@ -168,6 +181,12 @@ export interface Host {
      */
     registerModelProvider(provider: string, config: ProviderConfig): () => void;
     /**
+     * Registers an execution provider for a workspace URI scheme.
+     * @since 0.28.0
+     * @experimental
+     */
+    registerWorkspaceProvider(scheme: string, provider: WorkspaceProvider): () => void;
+    /**
      * Shapes the request every model call sends: `shape` returns a replacement payload, or undefined to keep it. It runs
      * after Pi and the caller shaped the request, closest to the wire. The return value stops the shaping.
      * @since 0.18.0
@@ -181,6 +200,12 @@ export interface Host {
      * @since 0.3.0
      */
     requesterOf(conversationId: ConversationId): string | undefined;
+    /**
+     * The conversation's current working folder or workspace URI.
+     * @since 0.28.0
+     * @experimental
+     */
+    cwdOf(conversationId: ConversationId): string;
     /**
      * The role of a person by id: `"owner"`, `"guest"`, or `"viewer"`. It is `undefined` for an id that is not a person here.
      * @since 0.27.0
@@ -242,6 +267,12 @@ export interface Host {
      * @experimental
      */
     readonly linkedSessions: LinkedSessions;
+    /**
+     * Starts an ordinary top-level session, the same kind New session makes, for the person Pi works for in the source.
+     * @since 0.28.0
+     * @experimental
+     */
+    readonly sessions: Sessions;
     /**
      * Makes text from other places safe for Pi to read.
      * @since 0.14.0
@@ -331,11 +362,28 @@ export interface AppEvents {
      */
     "run.started": { conversationId: number; session: number };
     /**
-     * Pi stopped working in a conversation.
+     * Pi stopped working in a conversation. `outcome` says how: `done` when the run finished, `failed` when it gave up,
+     * or `aborted` when it was stopped. `failure` is why, the same short line the session list shows, and only when
+     * `outcome` is `failed`.
      * @since 0.22.0
      * @experimental
      */
-    "run.ended": { conversationId: number; session: number };
+    "run.ended": {
+        conversationId: number;
+        session: number;
+        /**
+         * How the run stopped: it finished, it gave up, or it was stopped.
+         * @since 0.28.0
+         * @experimental
+         */
+        outcome: "done" | "failed" | "aborted";
+        /**
+         * Why it gave up, only when `outcome` is `failed`.
+         * @since 0.28.0
+         * @experimental
+         */
+        failure?: string;
+    };
 }
 
 /**
@@ -852,7 +900,10 @@ export interface LinkedSessions {
         key: string,
     ): Promise<{ session: ConversationId; address: string }>;
     /**
-     * Sends `message` to the linked session at the address `to`: as a follow-up, or with `steer` at its next pause.
+     * Sends `message` to the linked session at the address `to`: at its next pause (since 0.28.0; before, only with
+     * `steer: true`), or with `steer: false` after its run. `answers` (since 0.28.0) says whether its final answer comes
+     * back to the source by itself, which it does when the source started it; otherwise the message asks it to reply
+     * when an answer is needed.
      * @since 0.14.0
      * @experimental
      */
@@ -860,13 +911,58 @@ export interface LinkedSessions {
         source: ConversationId,
         request: { to: string; message: string; steer?: boolean },
         key: string,
-    ): Promise<void>;
+    ): Promise<{ answers: boolean }>;
+    /**
+     * Stops the run of the linked session at the address `to`, and withdraws what waits in its queue. When it is idle,
+     * it has no run to stop, and the call only withdraws the queue. `busy` says whether it was working.
+     * @since 0.28.0
+     * @experimental
+     */
+    stop(source: ConversationId, request: { to: string }, key: string): Promise<{ busy: boolean }>;
+    /**
+     * Archives the linked session at the address `to`, or brings it back when `archived` is false. `archived` says
+     * whether it is archived now. `repeating` is how many of its repeating schedules keep running.
+     * @since 0.28.0
+     * @experimental
+     */
+    archive(
+        source: ConversationId,
+        request: { to: string; archived?: boolean },
+        key: string,
+    ): Promise<{ archived: boolean; repeating: number }>;
     /**
      * The sessions linked to `source`, at any distance, that the person Pi works for there can see.
      * @since 0.14.0
      * @experimental
      */
     list(source: ConversationId): Promise<LinkedSession[]>;
+}
+
+/**
+ * Ordinary sessions an extension starts. Each call acts as the person Pi works for in `source`, with that person's
+ * checks. A call again with the same `key` returns the session the first call made, and sends its message once.
+ * @since 0.28.0
+ * @experimental
+ */
+export interface Sessions {
+    /**
+     * Starts an ordinary session, like New session, in `cwd` or the server's default folder. `model` is
+     * `provider/modelId`. `thinking` is any level, lowered to one the model has. With `message`, that text is
+     * the session's first message, sent once for this `key`, as the person wrote it.
+     * @since 0.28.0
+     * @experimental
+     */
+    start(
+        source: ConversationId,
+        request: {
+            title?: string;
+            cwd?: string;
+            model?: string;
+            thinking?: string;
+            message?: string;
+        },
+        key: string,
+    ): Promise<{ session: ConversationId }>;
 }
 
 /**
@@ -905,13 +1001,20 @@ export interface LinkedSession {
      * @experimental
      */
     archived?: boolean;
+    /**
+     * Why its last run failed, the same short line the session list shows, only while that failure stands and with the
+     * same condition as `title`. A later run clears it.
+     * @since 0.28.0
+     * @experimental
+     */
+    failed?: string;
 }
 
 /**
  * A human-facing linked session that the authenticated person can see.
  * @since 0.16.0
  */
-export interface HumanLinkedSession extends LinkedSession {
+export interface HumanLinkedSession extends Omit<LinkedSession, "failed"> {
     /**
      * Its id, for pocket.openConversation. Other metadata keeps LinkedSession's audience rules.
      * @since 0.16.0
@@ -967,6 +1070,12 @@ export type WebMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
  * @since 0.14.0
  */
 export interface WebRequest {
+    /**
+     * Creates a session from an owner-only route.
+     * @since 0.28.0
+     * @experimental
+     */
+    createSession(request: { cwd: string; title?: string }): Promise<{ id: number }>;
     /**
      * The request's method.
      * @since 0.14.0
@@ -2389,6 +2498,32 @@ export interface CallSummary {
 }
 
 /**
+ * A code fence renderer for one or more languages.
+ * @since 0.28.0
+ * @experimental
+ */
+export interface FenceSpec {
+    /** The registration's id in the module. */
+    id: string;
+    /** Code fence languages that this component draws. Matching ignores case. */
+    langs: string[];
+    /** What the app renders for matching code fences. */
+    component: ComponentType<FenceProps>;
+}
+
+/**
+ * Sets an inline or display math renderer.
+ * @since 0.28.0
+ * @experimental
+ */
+export interface MathInlineSpec {
+    /** The registration's id in the module. */
+    id: string;
+    /** Mounts math into a code element, with its source and whether it is display math. */
+    mount(element: HTMLElement, source: string, display: boolean): void;
+}
+
+/**
  * How the calls of one of the module's tools show in transcripts and peek tiles. Each function gets a copy of the
  * call's arguments.
  * @since 0.14.0
@@ -2427,7 +2562,7 @@ export interface ToolCallSpec<A = Record<string, unknown>> {
 }
 
 /**
- * What `rail`, `menu`, `launcher`, `page`, and `sheet` return.
+ * What `rail`, `menu`, `launcher`, `page`, `sheet`, `fence`, and `mathInline` return.
  * @since 0.14.0
  */
 export interface Added<S> {
@@ -2487,6 +2622,20 @@ export interface MarkdownProps {
      * @since 0.14.0
      */
     text: string;
+}
+
+/**
+ * The props of a `pocket.fence` component.
+ * @since 0.28.0
+ * @experimental
+ */
+export interface FenceProps {
+    /** The code text from the fence. */
+    source: string;
+    /** The language label from the fence. */
+    lang: string;
+    /** Whether the Markdown is still streaming. */
+    streaming: boolean;
 }
 
 /**
@@ -2811,6 +2960,18 @@ export interface Pocket {
      * @experimental
      */
     composerKey(spec: ComposerKeySpec): Added<ComposerKeySpec>;
+    /**
+     * Draws matching code fences with a Preact component.
+     * @since 0.28.0
+     * @experimental
+     */
+    fence(spec: FenceSpec): Added<FenceSpec>;
+    /**
+     * Sets the inline and display math renderer.
+     * @since 0.28.0
+     * @experimental
+     */
+    mathInline(spec: MathInlineSpec): Added<MathInlineSpec>;
     /**
      * Puts text into the message box, after what is there, for the person to send. It never sends.
      * @since 0.19.0

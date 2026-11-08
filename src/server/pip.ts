@@ -1169,7 +1169,11 @@ export class Pip {
         folders.add(app.defaultCwd);
 
         for (const folder of [clone, ...[...folders].slice(0, 200)]) {
-            if (existsSync(folder) && sameRepo(await this.#origin(folder), info.repo)) {
+            if (
+                app.workspaceScheme(folder) === undefined &&
+                existsSync(folder) &&
+                sameRepo(await this.#origin(folder), info.repo)
+            ) {
                 return (
                     await git(folder, ["rev-parse", "--show-toplevel"]).catch(() => folder)
                 ).trim();
@@ -1774,7 +1778,11 @@ export class Pip {
                 };
 
                 await strand(watch.value);
-                watch.start(strand);
+                watch.start(async (call) => {
+                    if (call.kind === "value") {
+                        await strand(call.value);
+                    }
+                });
             }
 
             settled = await submission.wait(context);

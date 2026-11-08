@@ -7,7 +7,7 @@
  * `alerts.ts`, provider sign-ins in `providers.ts`, and each conversation's shared live view in `room.ts`.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -37,6 +37,7 @@ import {
     ProviderDoc,
     type Registry,
     type Storage,
+    type SubmissionRecord,
     UsageDoc,
     type UsageState,
 } from "@earendil-works/pi-durable";
@@ -50,6 +51,7 @@ import { Browsers } from "./browser.ts";
 import type { BrowserState } from "./browser/page.ts";
 import { Collab, REACTIONS } from "./collab.ts";
 import { Commands } from "./commands.ts";
+import { ExtensionSessions } from "./extension-sessions.ts";
 import { LinkedSessions } from "./linked-sessions.ts";
 import { removeAvatar, saveAvatar } from "./avatars.ts";
 import { APP_ROOT, ConfigStore, modulesWith, type User } from "./config.ts";
@@ -68,6 +70,7 @@ import {
     DecisionsDoc,
     FolderFavoritesDoc,
     MemoryDoc,
+    RunFailureDoc,
     type SessionMeta,
     SessionsDoc,
     SpendDoc,
@@ -88,6 +91,7 @@ import {
     type ModelRequestShaper,
     type PocketHost,
     type WebAccess,
+    type WorkspaceProvider,
 } from "./host.ts";
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
 import { takeLock } from "./lock.ts";
@@ -96,8 +100,10 @@ import { isThinkingLevel, modelInfo, modelList, resolveModel, THINKING_LEVELS } 
 import { Updates } from "./updates.ts";
 import { pocketPackage, pocketVersion } from "./versions.ts";
 import { serverBuild } from "./build.ts";
+import { presentedBuild } from "./entry-presentation.ts";
 import { compactionReader } from "./compaction.ts";
 import { configureHttp } from "./net.ts";
+import { expandHome, workspaceScheme } from "./paths.ts";
 import { createPublicFetch } from "./public-fetch.ts";
 import { PiSessions } from "./pi-sessions.ts";
 import { Hooks } from "./hooks.ts";
@@ -112,10 +118,18 @@ import { LimitGate, type LimitTuning } from "./limit-gate.ts";
 import { CacheKeeper } from "./cache-keeper.ts";
 import { measureModelStreams } from "./timing.ts";
 import { Providers } from "./providers.ts";
-import { PushStore } from "./push.ts";
+import { CustomProviders } from "./custom-providers.ts";
+import { type EmbedderMessage, PushStore } from "./push.ts";
 import { type ExtensionInfo, ExtensionLoader, linkTypes, prepareDropInFolder } from "./reload.ts";
 import { ResendTask } from "./resend.ts";
-import { type Client, reportingOf, Room, ROOM_DOCS, subagentView } from "./room.ts";
+import {
+    type Client,
+    reportingOf,
+    Room,
+    ROOM_DOCS,
+    type SubagentModel,
+    subagentView,
+} from "./room.ts";
 import { whyUnanswered } from "./subagent-runs.ts";
 import { Schedules } from "./schedules.ts";
 import { BackgroundTasks } from "./background.ts";
@@ -174,12 +188,27 @@ const MAX_SUBAGENT_MODELS = 50;
 export const MAX_PEEKS = 20;
 /**
  * How a run that failed leaves its messages: the model or its provider answered with an error, no model was there to
- * ask, or the run broke. Stopped (`aborted`), cleared (`reset`), and replaced (`stale`) runs did not fail.
+ * ask, the run broke, or the server stopped while the model answered and no retry was left (`interrupted`, since Pi
+ * Durable 1.5). Stopped (`aborted`), cleared (`reset`), and replaced (`stale`) runs did not fail.
  */
-const FAILED_RUN = new Set(["model_error", "no_model", "faulted"]);
+const FAILED_RUN = new Set(["model_error", "no_model", "faulted", "interrupted"]);
 
 /** The session list goes to every tab on each change: these bound what it carries. */
 const FAILURE_TEXT = 120;
+
+/** The short failure line the session list and extensions share, or none when the run did not fail. */
+function failureText(
+    status: string,
+    reason: string | undefined,
+    detail: unknown,
+): string | undefined {
+    if (status !== "unanswered" || reason === undefined || !FAILED_RUN.has(reason)) {
+        return undefined;
+    }
+
+    return whyUnanswered(reason, detail).slice(0, FAILURE_TEXT);
+}
+
 const ASK_SUBJECT = 200;
 const ASK_REASON = 200;
 const FAILED_AGENTS = 5;
@@ -346,11 +375,15 @@ export class PocketApp {
     readonly defaultCwd: string;
     readonly supervised: boolean;
     readonly startedAt = Date.now();
+    readonly #code = serverBuild();
+
     /**
-     * This server's code (`serverBuild`): sessions a tab keeps, in its memory or on the device, are good for a server of
-     * the same build, so they last across a restart but not across new code.
+     * This server's code (`serverBuild`) and how its modules present inputs: sessions a tab keeps, in its memory or on
+     * the device, are good for a server of the same build, so they last across a restart but not across new code.
      */
-    readonly build = serverBuild();
+    get build(): string {
+        return presentedBuild(this.#code, this.webs.presentations());
+    }
     /** Set by the launcher over IPC; undefined when the server runs on its own. */
     access: AccessInfo | undefined;
     harness!: Harness;
@@ -360,9 +393,12 @@ export class PocketApp {
     readonly commands = new Commands(this);
     readonly extensionCommands = new ExtensionCommands(this);
     readonly linkedSessions = new LinkedSessions(this);
+    readonly extensionSessions = new ExtensionSessions(this);
     readonly collab = new Collab(this);
     readonly alerts = new Alerts(this);
     readonly providers = new Providers(this);
+    /** OpenAI-compatible endpoints the owner adds in the Providers sheet, kept in Pi's `models.json`. */
+    readonly customProviders = new CustomProviders(this);
     /** Model requests that hit a limit wait for it to clear, then go on (`limit-gate.ts`). */
     readonly limits: LimitGate;
     /** Keeps the prompt cache warm while a run waits on a tool call (`cache-keeper.ts`). */
@@ -424,7 +460,11 @@ export class PocketApp {
     #websAll = false;
     readonly #clients = new Set<Client>();
     readonly #rooms = new Map<ConversationId, Promise<Room>>();
-    readonly #envs = new Map<string, NodeExecutionEnv>();
+    readonly #envs = new Map<string, ExecutionEnv>();
+    readonly #workspaceProviders = new Map<
+        string,
+        { token: symbol; provider: WorkspaceProvider }[]
+    >();
     readonly #busy = new Set<ConversationId>();
     /** When each conversation's last run ended, since this server started: peek tiles show sessions done since a look. */
     readonly #endedAt = new Map<ConversationId, number>();
@@ -448,6 +488,7 @@ export class PocketApp {
     /** The extensions installed now: every conversation runs with them, except PiP's own, which PiP alone selects. */
     #registry: Registry | undefined;
     #unsubscribeCommits: (() => void) | undefined;
+    #unsubscribeRunEnds: (() => void) | undefined;
     #unsubscribeApprovals: (() => void) | undefined;
     #unsubscribeBrowsers: (() => void) | undefined;
     #lockFile: string;
@@ -598,6 +639,9 @@ export class PocketApp {
             // Everyone's tabs hear the new list in `hello`: commands are for guests too, not by a browser module's access.
             commandsChanged: () => this.#websChanged("all"),
             presentationsChanged: () => {
+                // A new build in `hello`: what tabs kept shows the inputs as presented before.
+                this.#websChanged("all");
+
                 for (const pending of this.#rooms.values()) {
                     void pending.then(
                         (room) => room.reproject(),
@@ -840,6 +884,8 @@ export class PocketApp {
             modelProblem: (ref, fresh) => this.providers.problem(ref, fresh),
             registerModelProvider: (provider, config) =>
                 this.#registerModelProvider(provider, config),
+            registerWorkspaceProvider: (scheme, provider) =>
+                this.registerWorkspaceProvider(scheme, provider),
             shapeModelRequests: (shape) => {
                 this.#shapers.push(shape);
 
@@ -869,6 +915,8 @@ export class PocketApp {
             heldBack: (conversationId) => this.spend.heldBack(conversationId),
             onLimitsChanged: (listener) => this.spend.onLimitsChanged(listener),
             linkedSessions: this.linkedSessions,
+            sessions: this.extensionSessions,
+            cwdOf: (conversationId) => this.cwdOf(conversationId),
             schedules: this.schedules,
             background: this.background,
             goals: this.goals,
@@ -882,6 +930,11 @@ export class PocketApp {
             updates: this.updates,
             text: Object.freeze({ quoted, defang }),
             thinkingLevels: THINKING_LEVELS,
+            toolNames: () =>
+                registry
+                    .snapshot()
+                    .tools()
+                    .map(({ tool }) => tool.name),
         };
 
         this.#registry = registry;
@@ -945,7 +998,7 @@ export class PocketApp {
                     await tx.doc(ArtifactsDoc, conversation.id);
                     await tx.doc(SubagentsDoc, conversation.id);
                 },
-                onReport: (error) => this.notice("warning", describe(error)),
+                onReport: (report) => this.notice("warning", describe(report.error)),
             },
             context,
         );
@@ -955,9 +1008,20 @@ export class PocketApp {
 
         await this.spend.load(conversations);
 
-        this.#unsubscribeCommits = this.harness.subscribeCommits((publication) =>
-            this.#committed(publication),
-        );
+        // An observer that throws is detached for good: one commit's error must not stop the app hearing of the rest.
+        const commits = this.harness.observeCommits({
+            advance: (publication) => {
+                try {
+                    this.#committed(publication);
+                } catch (error) {
+                    this.notice("warning", describe(error));
+                }
+            },
+            end: () => {},
+        });
+
+        this.#unsubscribeCommits = () => commits.detach();
+        this.#unsubscribeRunEnds = this.linkedSessions.watch();
         this.#unsubscribeApprovals = this.approvals.subscribe((id) => {
             void this.#rooms.get(id)?.then(
                 (room) => room.schedule(),
@@ -1024,6 +1088,16 @@ export class PocketApp {
                     this.#busy.add(id);
                 }
 
+                if (this.#sessions[String(id)] !== undefined) {
+                    // The settled submission is what lasted. The failure line is written after it, so a crash can leave
+                    // that line missing or stale: this puts it back, or clears it when a run is still going.
+                    const failure = await this.#failureOf(storage, id, live);
+
+                    if (failure !== undefined) {
+                        this.#failed.set(id, failure);
+                    }
+                }
+
                 // A compaction that resumes asks the model too: it may wait for a limit.
                 if ((live?.compactions?.length ?? 0) > 0) {
                     this.#compacting.add(id);
@@ -1062,6 +1136,23 @@ export class PocketApp {
     #committed(publication: CommitPublication): void {
         let sessionsChanged = false;
         let alreadyPaid = false;
+        // How each run in this commit stopped, read before the live document ends it: both land here, in either order.
+        const failedNow = new Map<ConversationId, string>();
+        const abortedNow = new Set<ConversationId>();
+
+        for (const change of publication.changes) {
+            if (change.type !== "submission") {
+                continue;
+            }
+
+            const text = failureText(change.value.status, change.value.reason, change.value.detail);
+
+            if (text !== undefined) {
+                failedNow.set(change.value.conversationId, text);
+            } else if (change.value.status === "unanswered" && change.value.reason === "aborted") {
+                abortedNow.add(change.value.conversationId);
+            }
+        }
 
         // Auxiliary requests pay their captured person in the same commit as usage, in either document order.
         // A commit with both documents must pay every usage change. Normal spend counts never change UsageDoc.
@@ -1069,7 +1160,7 @@ export class PocketApp {
             if (
                 change.type === "document" &&
                 change.record.kind === SpendDoc.definition.kind &&
-                change.value !== null
+                change.kind === "change"
             ) {
                 this.spend.countedChanged(change.value as { people: Record<string, number> });
                 alreadyPaid = true;
@@ -1086,7 +1177,7 @@ export class PocketApp {
             ) {
                 this.spend.usageChanged(
                     change.conversationId,
-                    change.value as UsageState | null,
+                    change.kind === "change" ? (change.value as UsageState) : null,
                     alreadyPaid,
                 );
 
@@ -1105,7 +1196,7 @@ export class PocketApp {
 
         for (const change of publication.changes) {
             if (change.type === "document") {
-                if (this.#documentCommitted(change)) {
+                if (this.#documentCommitted(change, failedNow, abortedNow)) {
                     sessionsChanged = true;
                 }
             } else if (change.type === "submission") {
@@ -1125,19 +1216,16 @@ export class PocketApp {
                 }
 
                 // Its run failed: the commit that settles it ends the run too, so the list hears of both at once.
+                // The line is stored too, so the next process still knows; a new run clears that record.
+                const text = failedNow.get(change.value.conversationId);
+
                 if (
-                    change.value.status === "unanswered" &&
-                    FAILED_RUN.has(change.value.reason) &&
+                    text !== undefined &&
                     this.#sessions[String(change.value.conversationId)] !== undefined &&
                     !this.#failed.has(change.value.conversationId)
                 ) {
-                    this.#failed.set(
-                        change.value.conversationId,
-                        whyUnanswered(change.value.reason, change.value.detail).slice(
-                            0,
-                            FAILURE_TEXT,
-                        ),
-                    );
+                    this.#failed.set(change.value.conversationId, text);
+                    this.#storeRunFailure(change.value.conversationId, text);
                     sessionsChanged = true;
                 }
             }
@@ -1169,27 +1257,30 @@ export class PocketApp {
     }
 
     /** A document changed: the views that show it update. True when the session list changed too. */
-    #documentCommitted(change: Extract<DocumentCommitChange, { type: "document" }>): boolean {
+    #documentCommitted(
+        change: Extract<DocumentCommitChange, { type: "document" }>,
+        failedNow: ReadonlyMap<ConversationId, string>,
+        abortedNow: ReadonlySet<ConversationId>,
+    ): boolean {
         const kind = change.record.kind;
         const id = change.conversationId;
+        // A retired document reads as none.
+        const value = change.kind === "change" ? change.value : null;
         let sessionsChanged = false;
 
         if (
             kind === BackgroundDoc.definition.kind &&
             id !== undefined &&
-            this.#noteBackground(
-                id,
-                change.value as { items: Record<string, BackgroundTask> } | null,
-            )
+            this.#noteBackground(id, value as { items: Record<string, BackgroundTask> } | null)
         ) {
             sessionsChanged = true;
         }
 
         if (kind === "pi.live" && id !== undefined) {
-            const busy = (change.value as LiveState | null)?.run !== undefined;
+            const busy = (value as LiveState | null)?.run !== undefined;
 
             // A compaction asks the model too (an idle session's manual one has no run): it may wait for a limit.
-            if (((change.value as LiveState | null)?.compactions?.length ?? 0) > 0) {
+            if (((value as LiveState | null)?.compactions?.length ?? 0) > 0) {
                 this.#compacting.add(id);
             } else {
                 this.#compacting.delete(id);
@@ -1197,12 +1288,21 @@ export class PocketApp {
 
             if (busy !== this.#busy.has(id)) {
                 const session = Number(this.rootOf(id));
+                const failure = busy ? undefined : (failedNow.get(id) ?? this.#failed.get(id));
+                const outcome =
+                    failure !== undefined ? "failed" : abortedNow.has(id) ? "aborted" : "done";
 
                 // For extensions (`host.on`): PiP's runs are its person's alone.
                 if (this.#sessions[String(session)]?.pip === undefined) {
                     this.events.emit(busy ? "run.started" : "run.ended", {
                         conversationId: Number(id),
                         session,
+                        ...(busy
+                            ? {}
+                            : {
+                                  outcome,
+                                  ...(failure === undefined ? {} : { failure }),
+                              }),
                     });
                 }
 
@@ -1210,6 +1310,7 @@ export class PocketApp {
                     this.#busy.add(id);
                     // A new run starts over: whether it fails is its own to say.
                     this.#failed.delete(id);
+                    this.#storeRunFailure(id, undefined);
 
                     if (this.#sessions[String(id)] !== undefined) {
                         this.#movedUp(id, Date.now());
@@ -1246,8 +1347,18 @@ export class PocketApp {
                 }
             }
         } else if (kind === "pi.agent" && id !== undefined) {
-            if (change.value !== null) {
-                this.#agents.set(id, change.value as AgentState);
+            if (value !== null) {
+                this.#agents.set(id, value as AgentState);
+            }
+
+            const parent = this.#parents.get(id);
+
+            // A subagent's row in its parent's subagents bar shows its model.
+            if (parent !== undefined) {
+                void this.#rooms.get(parent)?.then(
+                    (room) => room.schedule(),
+                    () => {},
+                );
             }
 
             sessionsChanged = true;
@@ -1255,7 +1366,7 @@ export class PocketApp {
             const before = this.#sessions;
 
             this.#sessions = {
-                ...((change.value as { items?: Record<string, SessionMeta> } | null)?.items ?? {}),
+                ...((value as { items?: Record<string, SessionMeta> } | null)?.items ?? {}),
             };
             sessionsChanged = true;
             this.#sessionEvents(before, this.#sessions);
@@ -1268,29 +1379,22 @@ export class PocketApp {
                 );
             }
         } else if (kind === FolderFavoritesDoc.definition.kind) {
-            this.folderFavorites.committed(
-                change.value as { users: Record<string, string[]> } | null,
-            );
+            this.folderFavorites.committed(value as { users: Record<string, string[]> } | null);
         } else if (kind === MemoryDoc.definition.kind) {
             this.memory.committed();
         } else if (ROOM_DOCS.has(kind) && id !== undefined) {
             if (kind === ChatDoc.definition.kind) {
-                if (
-                    this.#noteChat(
-                        id,
-                        (change.value as { messages?: ChatMessage[] } | null)?.messages,
-                    )
-                ) {
+                if (this.#noteChat(id, (value as { messages?: ChatMessage[] } | null)?.messages)) {
                     sessionsChanged = true;
                 }
             } else if (kind === SubagentsDoc.definition.kind) {
-                this.#noteSubagents(id, change.value as SubagentsValue | null);
+                this.#noteSubagents(id, value as SubagentsValue | null);
                 // The list counts each session's subagents, and the board lists them.
                 sessionsChanged = true;
             }
 
             void this.#rooms.get(id)?.then(
-                (room) => room.setDoc(kind, change.value as Record<string, unknown> | null),
+                (room) => room.setDoc(kind, value as Record<string, unknown> | null),
                 () => {},
             );
 
@@ -1299,7 +1403,7 @@ export class PocketApp {
                     void pending.then(
                         (room) => {
                             if (room.id !== id && this.rootOf(room.id) === id) {
-                                room.setDoc(kind, change.value as Record<string, unknown> | null);
+                                room.setDoc(kind, value as Record<string, unknown> | null);
                             }
                         },
                         () => {},
@@ -1368,11 +1472,13 @@ export class PocketApp {
             get retry() {
                 return safe(() => settings.getRetrySettings()) ?? {};
             },
+            // Every message that waits goes in at once, so a queue of agents' messages and reports costs one turn, not
+            // one each. Pi's own setting, when the owner set one, still wins.
             get steeringMode() {
-                return safe(() => settings.getSteeringMode());
+                return safe(() => settings.getSettings().steeringMode) ?? "all";
             },
             get followUpMode() {
-                return safe(() => settings.getFollowUpMode());
+                return safe(() => settings.getSettings().followUpMode) ?? "all";
             },
         } as HarnessSettings;
     }
@@ -1411,7 +1517,85 @@ export class PocketApp {
         }
     }
 
-    /** Where a conversation's commands run: its folder on this machine. */
+    registerWorkspaceProvider(scheme: string, provider: WorkspaceProvider): () => void {
+        if (
+            !/^[a-z][a-z0-9+.-]+$/i.test(scheme) ||
+            typeof provider?.env !== "function" ||
+            typeof provider?.resolveCwd !== "function"
+        ) {
+            throw new Error("Invalid workspace provider registration");
+        }
+
+        const key = scheme.toLowerCase();
+        const token = Symbol(key);
+        const registrations = this.#workspaceProviders.get(key) ?? [];
+
+        registrations.push({ token, provider });
+        this.#workspaceProviders.set(key, registrations);
+
+        return () => {
+            const live = this.#workspaceProviders.get(key);
+            const index = live?.findIndex((entry) => entry.token === token) ?? -1;
+
+            if (index >= 0) {
+                live!.splice(index, 1);
+
+                if (live!.length === 0) {
+                    this.#workspaceProviders.delete(key);
+                }
+            }
+        };
+    }
+
+    workspaceScheme(cwd: string): string | undefined {
+        return workspaceScheme(cwd);
+    }
+
+    /** A workspace URI reaches a provider's machines and keys: they are the owner's. */
+    requireWorkspaceOwner(user: User, cwd: string): void {
+        if (user.role !== "owner" && this.workspaceScheme(cwd.trim()) !== undefined) {
+            throw new HttpError(403, "Only the owner can use a remote workspace.");
+        }
+    }
+
+    async resolveCwd(cwd: string, signal?: AbortSignal): Promise<string> {
+        const scheme = this.workspaceScheme(cwd);
+
+        if (scheme === undefined) {
+            return this.workspace.checkDirectory(cwd);
+        }
+
+        const registration = this.#workspaceProviders.get(scheme)?.at(-1);
+
+        // 400, not 503: an unknown scheme and a provider module that is off look the same here.
+        // Only the owner can fix either one, and a retry does not help.
+        if (registration === undefined) {
+            throw new HttpError(
+                400,
+                `No workspace provider is registered for URI scheme ${scheme}`,
+            );
+        }
+
+        signal?.throwIfAborted();
+        const canonical = await registration.provider.resolveCwd(cwd, signal);
+
+        if (this.#workspaceProviders.get(scheme)?.at(-1)?.token !== registration.token) {
+            throw new HttpError(
+                409,
+                `Workspace provider ${scheme} changed while resolving the workspace URI`,
+            );
+        }
+
+        signal?.throwIfAborted();
+
+        if (typeof canonical !== "string" || this.workspaceScheme(canonical) !== scheme) {
+            throw new Error(`Workspace provider ${scheme} returned an invalid canonical URI`);
+        }
+
+        return canonical;
+    }
+
+    /** Where a conversation's commands run: its folder here, or its workspace provider's env. */
     envFor(id: ConversationId): ExecutionEnv {
         return this.#wrapped(id, this.cwdOf(id));
     }
@@ -1421,7 +1605,19 @@ export class PocketApp {
         return wrapEnv(this.#env(cwd), Number(id), cwd, this.commandEnvs, this.hidden);
     }
 
-    #env(cwd: string): NodeExecutionEnv {
+    #env(cwd: string): ExecutionEnv {
+        const scheme = this.workspaceScheme(cwd);
+
+        if (scheme !== undefined) {
+            const provider = this.#workspaceProviders.get(scheme)?.at(-1)?.provider;
+
+            if (provider === undefined) {
+                throw new Error(`No workspace provider is registered for URI scheme ${scheme}`);
+            }
+
+            return provider.env(cwd);
+        }
+
         let env = this.#envs.get(cwd);
 
         if (env === undefined) {
@@ -1951,6 +2147,41 @@ export class PocketApp {
         return false;
     }
 
+    /**
+     * Send a notification to this person's embedders (apps that show Pi Pocket and its notifications
+     * themselves), over their live connections: Web Push cannot reach them. Each connected one gets
+     * it; the embedder shows one per tag. Returns how many got it.
+     */
+    notifyEmbedders(userId: string, message: EmbedderMessage): number {
+        // Web Push clips; an embedder takes the same, and the whole call for an approval.
+        message = {
+            ...message,
+            title: message.title.slice(0, 200),
+            body: message.body.slice(0, 1000),
+        };
+        let sent = 0;
+
+        for (const client of this.#clients) {
+            if (client.user.id === userId && client.embedder !== undefined) {
+                client.send(client.embedder, message);
+                sent += 1;
+            }
+        }
+
+        return sent;
+    }
+
+    /** Whether any embedder that shows notifications is connected now. */
+    hasEmbedders(): boolean {
+        for (const client of this.#clients) {
+            if (client.embedder !== undefined) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Is this person looking at this conversation right now, in a visible tab? */
     watching(userId: string, id: ConversationId): boolean {
         for (const client of this.#clients) {
@@ -2224,6 +2455,7 @@ export class PocketApp {
                         this.#busy.has(record.conversationId),
                         reporting.has(name),
                         limited.get(Number(record.conversationId)),
+                        this.subagentModel(record.conversationId),
                     ),
                     ...(ask === undefined
                         ? {}
@@ -2611,6 +2843,31 @@ export class PocketApp {
             .sort((a, b) => b.updatedAt - a.updatedAt);
     }
 
+    /**
+     * The model a subagent runs on, for its row in the subagents bar and on the board, and whether it is another model
+     * than its parent's; none before its agent is known.
+     */
+    subagentModel(id: ConversationId): SubagentModel | undefined {
+        const agent = this.#agents.get(id);
+        const ref = agent?.model;
+
+        if (ref === undefined) {
+            return undefined;
+        }
+
+        const parent = this.#parents.get(id);
+        const theirs = parent === undefined ? undefined : this.#agents.get(parent)?.model;
+
+        return {
+            name: this.models.getModel(ref.provider, ref.modelId)?.name ?? ref.modelId,
+            ...(agent?.thinkingLevel === undefined ? {} : { thinking: agent.thinkingLevel }),
+            ...(theirs !== undefined &&
+            (theirs.provider !== ref.provider || theirs.modelId !== ref.modelId)
+                ? { other: true as const }
+                : {}),
+        };
+    }
+
     isBusy(id: ConversationId): boolean {
         return this.#busy.has(id);
     }
@@ -2698,6 +2955,82 @@ export class PocketApp {
     /** When a session's last run ended, since this server started. */
     endedAt(id: ConversationId): number | undefined {
         return this.#endedAt.get(id);
+    }
+
+    /**
+     * The failure line a session should show after a restart. A run still going clears a line a crash left behind. An
+     * idle session takes the line of its run's newest settled input, which the run's own commit stored, and writes a line
+     * that disagrees back. Undefined when there is nothing to show.
+     */
+    async #failureOf(
+        storage: Storage,
+        id: ConversationId,
+        live: { run?: unknown } | null | undefined,
+    ): Promise<string | undefined> {
+        const stored = (await this.harness.snapshot(RunFailureDoc, id, context))?.text;
+
+        if (live?.run !== undefined) {
+            if (stored !== undefined) {
+                this.#storeRunFailure(id, undefined);
+            }
+
+            return undefined;
+        }
+
+        // The newest settled input is the last run's: submission ids grow with each commit. Notes and other writes
+        // after it are skipped. A run that gave up leaves every one of its inputs unanswered, so that input still says so.
+        let record: SubmissionRecord | undefined;
+        let cursor: Cursor | undefined;
+
+        do {
+            const page = await storage.scanSubmissions(
+                { conversationId: id, order: "descending" },
+                64,
+                cursor,
+                context,
+            );
+
+            // A queued input, or one withdrawn from the queue, never joined a run. One a run gave up on may have no entry.
+            record = page.items.find(
+                (each) =>
+                    each.type === "input" &&
+                    (each.entry !== undefined ||
+                        (each.status === "unanswered" && FAILED_RUN.has(each.reason))),
+            );
+            cursor = record === undefined ? page.next : undefined;
+        } while (cursor !== undefined);
+
+        const text =
+            record?.status === "unanswered"
+                ? failureText(record.status, record.reason, record.detail)
+                : undefined;
+
+        if (text !== stored) {
+            this.#storeRunFailure(id, text);
+        }
+
+        return text;
+    }
+
+    /** Keep or clear a session's failure line, so the next process still knows. A listener may not commit. */
+    #storeRunFailure(id: ConversationId, text: string | undefined): void {
+        if (this.#sessions[String(id)] === undefined) {
+            return;
+        }
+
+        setImmediate(() => {
+            this.harness
+                .commit(async (tx) => {
+                    const record = await tx.doc(RunFailureDoc, id);
+
+                    if (text === undefined) {
+                        delete record.text;
+                    } else {
+                        record.text = text;
+                    }
+                }, context)
+                .catch((error: unknown) => this.log(`run failure not stored: ${describe(error)}`));
+        });
     }
 
     async conversationTitle(id: ConversationId): Promise<string> {
@@ -3094,7 +3427,16 @@ export class PocketApp {
             found.push(...(await Promise.all(batch.map(([id, meta]) => one(id, meta)))).flat());
         }
 
-        return found.sort((a, b) => b.updatedAt - a.updatedAt);
+        // The person as they are now: a share removed while this ran takes its entries out.
+        const now = this.config.userById(user.id);
+
+        return found
+            .filter(
+                (entry) =>
+                    now !== undefined &&
+                    this.canSee(now, entry.session as unknown as ConversationId),
+            )
+            .sort((a, b) => b.updatedAt - a.updatedAt);
     }
 
     async artifactBody(id: ConversationId, artifact: string, version?: number) {
@@ -3212,6 +3554,10 @@ export class PocketApp {
 
     /** Pi's skills for a session working in `cwd`, from the places Pi looks (`skills.ts`). */
     skills(cwd: string): Skill[] {
+        if (this.workspaceScheme(cwd) !== undefined) {
+            return [];
+        }
+
         return loadSessionSkills(cwd, this.#skillSources());
     }
 
@@ -3224,7 +3570,13 @@ export class PocketApp {
             throw new HttpError(403, "Only the owner decides which projects Pi trusts.");
         }
 
-        return readProjectTrust(this.cwdOf(id), this.#skillSources());
+        const cwd = this.cwdOf(id);
+
+        if (this.workspaceScheme(cwd) !== undefined) {
+            throw new HttpError(400, "Project trust is not available for remote workspaces.");
+        }
+
+        return readProjectTrust(cwd, this.#skillSources());
     }
 
     /** The owner's answer to "trust this project?", saved where Pi's CLI keeps its own, as its `/trust` does. */
@@ -3273,6 +3625,16 @@ export class PocketApp {
         }
 
         const cwd = this.cwdOf(id);
+
+        // A remote workspace has no project folder here: only Pi's own templates and whole paths.
+        if (this.workspaceScheme(cwd) !== undefined) {
+            return loadPromptTemplates(
+                this.#home,
+                getAgentDir(),
+                paths.filter((path) => isAbsolute(expandHome(path.trim()))),
+                { project: false },
+            );
+        }
 
         // A project told "Don't trust" offers none of its own, as its .pi/skills.
         return loadPromptTemplates(cwd, getAgentDir(), paths, {
@@ -3871,6 +4233,7 @@ export class PocketApp {
             this.limits.close();
             this.background.close();
             this.#unsubscribeCommits?.();
+            this.#unsubscribeRunEnds?.();
             this.#unsubscribeApprovals?.();
             this.#unsubscribeBrowsers?.();
             this.guard.close();

@@ -11,6 +11,7 @@ import {
     root,
     scriptedModel,
     until,
+    offerSubagents,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -126,6 +127,7 @@ before(async () => {
 
     model = scriptedModel(route);
     app = await openApp(model);
+    offerSubagents(app);
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
     );
@@ -162,6 +164,16 @@ test("the bar says what works; Stop stops one", real, async () => {
     await see(
         `return JSON.stringify(document.querySelectorAll(".agent-row").length === 2)`,
         "a row each",
+    );
+    // Each row says the model it runs on: the session's own, so with no "↗".
+    const models = await inPage<string[]>(
+        `return JSON.stringify([...document.querySelectorAll(".agent-row .agent-model")].map((tag) => tag.textContent.trim()))`,
+    );
+
+    assert.equal(models.length, 2, "a model on each row");
+    assert.ok(
+        models.every((text) => text !== "" && !text.startsWith("↗")),
+        `the session's own model: ${models.join(", ")}`,
     );
     await settled();
     await page.click({ label: "Stop slow" });
