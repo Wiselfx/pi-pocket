@@ -471,9 +471,12 @@ export default function createPip(host: PocketHost) {
         name: "session_delete",
         description:
             "Delete a session for good: its messages, its work, its files, and every record of it. It cannot be brought back.",
-        parameters: Type.Object({
-            session,
-        }),
+        parameters: obj(
+            {
+                session,
+            },
+            { open: true },
+        ),
         replay: "safe",
         execute: async (args, api) => {
             await host.pip.delete(api.conversationId, args.session);
