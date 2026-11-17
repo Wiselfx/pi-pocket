@@ -196,6 +196,28 @@ export async function conversationRoutes(
         );
     }
 
+    // What a Stop held: `send` them all, or `drop` or `edit` one, by its `key`.
+    if (third === "held" && method === "POST") {
+        const body = await readJson<{ action?: unknown; key?: unknown }>(request);
+        const key = String(body.key ?? "");
+
+        if (body.action === "send") {
+            return json(response, 200, { sent: await app.commands.sendHeld(id, user) });
+        }
+
+        if (body.action === "drop") {
+            await app.commands.dropHeld(id, user, key);
+
+            return json(response, 200, { ok: true });
+        }
+
+        if (body.action === "edit") {
+            return json(response, 200, await app.commands.editHeld(id, user, key));
+        }
+
+        throw new HttpError(400, "Say send, drop, or edit.");
+    }
+
     if (third === "move" && method === "POST") {
         const body = await readJson<{ submissionId?: number; mode?: string }>(request);
 
@@ -240,6 +262,30 @@ export async function conversationRoutes(
 
     if (third === "schedules" && fourth === undefined && method === "POST") {
         return json(response, 200, await app.commands.schedule(id, user, await readJson(request)));
+    }
+
+    if (
+        third === "schedules" &&
+        fourth !== undefined &&
+        parts[4] === undefined &&
+        method === "PUT"
+    ) {
+        return json(
+            response,
+            200,
+            await app.commands.updateSchedule(id, user, fourth, await readJson(request)),
+        );
+    }
+
+    if (
+        third === "schedules" &&
+        fourth !== undefined &&
+        parts[4] === "pause" &&
+        method === "POST"
+    ) {
+        const body = await readJson<{ paused?: unknown }>(request);
+
+        return json(response, 200, await app.commands.pauseSchedule(id, user, fourth, body.paused));
     }
 
     if (
@@ -447,6 +493,9 @@ export async function conversationRoutes(
         if (requested.trim() === "") {
             throw new HttpError(400, "path is required");
         }
+
+        // As the viewer's own route (`view`): reading a file whole takes the right to steer, not only to see.
+        app.requireSteer(user);
 
         const file = app.workspace.readableFile(user, id, requested);
         let handle: FileHandle;
@@ -704,7 +753,7 @@ export async function conversationRoutes(
             throw new HttpError(404, "No such background task here.");
         }
 
-        await app.background.stop(id, item.id);
+        await app.background.stop(id, item.id, "person");
 
         return json(response, 200, { ok: true });
     }
